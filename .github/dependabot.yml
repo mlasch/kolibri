@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # The esp-rs crates move fast and change APIs between minor versions
+  # (esp-hal-embassy was removed outright in favour of esp-rtos). Surfacing
+  # bumps as reviewable PRs is much safer than discovering them mid-feature.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      esp-rs:
+        patterns:
+          - "esp-*"
+      embassy:
+        patterns:
+          - "embassy-*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

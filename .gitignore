@@ -1,0 +1,27 @@
+# Rust build output
+/target/
+**/*.rs.bk
+
+# Firmware images produced by `espflash save-image`
+/firmware.bin
+*.bin
+*.elf
+*.hex
+*.uf2
+
+# Note: Cargo.lock IS committed. This is a firmware binary, not a library, and
+# reproducible builds of a specific flashed image depend on exact versions.
+
+# .vscode/ is committed on purpose -- the settings, tasks, launch config and
+# extension recommendations are shared project setup. Only local noise below.
+.vscode/*.log
+.vscode/ipch/
+.vscode/.ropeproject
+
+# Editor / OS noise
+*.swp
+*.swo
+*~
+.idea/
+.DS_Store
+Thumbs.db

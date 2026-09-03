@@ -1,0 +1,45 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "cargo build",
+      "type": "cargo",
+      "command": "build",
+      "problemMatcher": ["$rustc"],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "cargo build --release",
+      "type": "cargo",
+      "command": "build",
+      "args": ["--release"],
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    },
+    {
+      "label": "cargo clippy",
+      "type": "cargo",
+      "command": "clippy",
+      "args": ["--all-features", "--", "-D", "warnings"],
+      "problemMatcher": ["$rustc"],
+      "group": "build"
+    },
+    {
+      "label": "cargo fmt --check",
+      "type": "cargo",
+      "command": "fmt",
+      "args": ["--all", "--check"],
+      "problemMatcher": []
+    },
+    {
+      // Flashes over USB-C and opens the serial monitor. Stop it before
+      // starting a probe-rs debug session -- both want the same USB device.
+      "label": "flash + monitor",
+      "type": "cargo",
+      "command": "run",
+      "args": ["--release"],
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    }
+  ]
+}

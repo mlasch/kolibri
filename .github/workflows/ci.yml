@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege by default; no job here needs to write to the repo.
+permissions:
+  contents: read
+
+# A new push to the same branch makes the in-flight run obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Firmware artifacts are the point of this workflow; keep the ELF debuggable.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: fmt / clippy / build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads rust-toolchain.toml, so the channel and the
+      # riscv32imc-unknown-none-elf target come from a single source of truth
+      # shared with local development. Includes its own cargo cache.
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # Same invocation as .vscode/settings.json, so the editor and CI agree.
+      - name: Clippy
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Install espflash
+        uses: taiki-e/install-action@v2
+        with:
+          tool: espflash
+
+      # --merge produces a single image flashable at offset 0x0 (bootloader +
+      # partition table + app). --skip-padding keeps the artifact ~165 KB
+      # instead of padding out to the full 4 MB flash size.
+      - name: Build flashable image
+        run: |
+          espflash save-image \
+            target/riscv32imc-unknown-none-elf/release/kolibri \
+            --chip esp32c3 \
+            --merge \
+            --skip-padding \
+            firmware.bin
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-esp32c3
+          path: |
+            firmware.bin
+            target/riscv32imc-unknown-none-elf/release/kolibri
+          if-no-files-found: error
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources

@@ -1,0 +1,40 @@
+{
+  // --- Cross-compilation ---------------------------------------------------
+  // Stated explicitly so rust-analyzer is correct even if it fails to pick up
+  // the [build] target from .cargo/config.toml.
+  "rust-analyzer.cargo.target": "riscv32imc-unknown-none-elf",
+
+  // The single most important setting for a no_std project. Left on, these make
+  // rust-analyzer build test and bench targets for the bare-metal target, which
+  // cannot work -- the editor then fills with bogus "can't find crate for
+  // `test`" errors that have nothing to do with your code.
+  "rust-analyzer.cargo.allTargets": false,
+  "rust-analyzer.check.allTargets": false,
+
+  // --- Diagnostics ---------------------------------------------------------
+  // Match what CI enforces, so problems surface while typing rather than in CI.
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.check.extraArgs": ["--all-features"],
+
+  // --- Editing -------------------------------------------------------------
+  "[rust]": {
+    "editor.defaultFormatter": "rust-lang.rust-analyzer",
+    "editor.formatOnSave": true
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+  "editor.rulers": [100],
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // --- Performance ---------------------------------------------------------
+  // target/ is large and churns constantly; watching it wastes CPU and inotify
+  // handles.
+  "files.watcherExclude": {
+    "**/target/**": true
+  },
+  "search.exclude": {
+    "**/target": true
+  }
+}

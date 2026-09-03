@@ -1,0 +1,20 @@
+{
+  "recommendations": [
+    // Rust language server: completion, inlay hints, inline diagnostics.
+    "rust-lang.rust-analyzer",
+    // TOML schema + formatting for Cargo.toml and the config files.
+    "tamasfe.even-better-toml",
+    // Provides the "probe-rs-debug" debug adapter used by .vscode/launch.json.
+    "probe-rs.probe-rs-debugger",
+    // Shows outdated/vulnerable crate versions inline in Cargo.toml.
+    "fill-labs.dependi",
+    // Renders compiler and clippy diagnostics at the end of the line.
+    "usernamehw.errorlens",
+    // Applies .editorconfig.
+    "editorconfig.editorconfig"
+  ],
+  "unwantedRecommendations": [
+    // Superseded by rust-analyzer; having both causes duplicate diagnostics.
+    "rust-lang.rust"
+  ]
+}
