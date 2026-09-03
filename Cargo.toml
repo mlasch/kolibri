@@ -1,0 +1,64 @@
+[package]
+name        = "kolibri"
+version     = "0.1.0"
+edition     = "2024"
+rust-version = "1.95"
+license     = "Apache-2.0"
+description = "Async (Embassy) firmware for the Seeed Studio XIAO ESP32-C3"
+repository  = "https://github.com/marc/kolibri"
+readme      = "README.md"
+keywords    = ["esp32c3", "embassy", "embedded", "xiao", "no-std"]
+categories  = ["embedded", "no-std"]
+# Board-specific firmware binary, not a library for crates.io.
+publish     = false
+
+# These versions are a matched set: esp-rtos 0.4 depends on esp-hal ~1.2 and
+# embassy-sync ^0.8. Bumping one alone will fail to resolve.
+[dependencies]
+# `unstable` is required because esp_hal::timer is gated behind it.
+esp-hal = { version = "1.2.0", features = ["esp32c3", "unstable", "log-04"] }
+# esp-rtos replaces the retired esp-hal-embassy: it provides the embassy time
+# driver and the executor that #[esp_hal::main] expands into.
+esp-rtos = { version = "0.4.0", features = ["esp32c3", "embassy", "log-04"] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
+esp-println = { version = "0.18.0", features = ["esp32c3", "log-04"] }
+esp-backtrace = { version = "0.20.0", features = [
+  "esp32c3",
+  "panic-handler",
+  "println",
+] }
+
+# Do NOT enable any arch-*/platform-* feature here -- esp-rtos supplies the port
+# and enabling one alongside it breaks the build.
+embassy-executor = "0.10"
+embassy-time = "0.5"
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+
+log = "0.4"
+
+[profile.dev]
+# A fully unoptimized esp-hal build is enormous and slow to flash.
+opt-level = "s"
+
+[profile.release]
+opt-level     = "s"
+lto           = "fat"
+codegen-units = 1
+# Debug info lives in the ELF, not in flash, and probe-rs plus esp-backtrace
+# both need it to symbolise addresses.
+debug         = 2
+
+[lints.rust]
+unsafe_code      = "warn"
+missing_docs     = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[lints.clippy]
+all      = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# A firmware binary has no public API to document error cases for.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Register/pin values are inherently full of small literal casts.
+cast_possible_truncation = "allow"

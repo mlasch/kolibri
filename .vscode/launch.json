@@ -1,0 +1,49 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // Requires the "probe-rs.probe-rs-debugger" extension and the probe-rs
+      // CLI (`cargo install probe-rs-tools --locked`).
+      //
+      // The XIAO ESP32-C3's USB-C port is wired to the chip's built-in USB
+      // Serial/JTAG peripheral, so this needs no external debug probe -- but it
+      // does need exclusive access to that device. Stop any running
+      // `cargo run` / espflash monitor first.
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "name": "Debug (probe-rs, built-in USB-JTAG)",
+      "cwd": "${workspaceFolder}",
+      "chip": "esp32c3",
+      "preLaunchTask": "cargo build",
+      "flashingConfig": {
+        "flashingEnabled": true,
+        "haltAfterReset": true
+      },
+      "coreConfigs": [
+        {
+          "coreIndex": 0,
+          "programBinary": "target/riscv32imc-unknown-none-elf/debug/kolibri",
+          // RTT is off because this project logs via esp-println over USB
+          // serial. Flip to true if you switch to defmt-rtt.
+          "rttEnabled": false
+        }
+      ],
+      "consoleLogLevel": "Console"
+    },
+    {
+      // Attach to already-running firmware without reflashing or resetting --
+      // useful for catching a fault that only appears after a long uptime.
+      "type": "probe-rs-debug",
+      "request": "attach",
+      "name": "Attach (probe-rs, no flash)",
+      "cwd": "${workspaceFolder}",
+      "chip": "esp32c3",
+      "coreConfigs": [
+        {
+          "coreIndex": 0,
+          "programBinary": "target/riscv32imc-unknown-none-elf/debug/kolibri"
+        }
+      ]
+    }
+  ]
+}

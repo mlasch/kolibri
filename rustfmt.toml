@@ -1,0 +1,7 @@
+# Stable-channel options only. `imports_granularity` and `group_imports` are
+# nightly-gated and would make `cargo fmt --check` fail on the pinned toolchain.
+edition                   = "2024"
+max_width                 = 100
+newline_style             = "Unix"
+use_field_init_shorthand  = true
+use_small_heuristics      = "Default"

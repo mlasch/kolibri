@@ -1,0 +1,17 @@
+[build]
+target = "riscv32imc-unknown-none-elf"
+
+[target.riscv32imc-unknown-none-elf]
+# `cargo run` flashes over the XIAO's USB-C (native USB Serial/JTAG) and then
+# opens a serial monitor.
+runner = "espflash flash --monitor"
+rustflags = [
+  # linkall.x is emitted by esp-hal's build script.
+  "-C", "link-arg=-Tlinkall.x",
+  # Required for esp-backtrace to unwind the stack on panic.
+  "-C", "force-frame-pointers",
+]
+
+[env]
+# Default log level; override per-invocation, e.g. `ESP_LOG=debug cargo run`.
+ESP_LOG = "info"

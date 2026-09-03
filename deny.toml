@@ -1,0 +1,50 @@
+# cargo-deny policy. Run locally with `cargo deny check`; CI runs the same.
+# Schema: cargo-deny 0.18+ (tested against 0.20).
+
+[graph]
+# Only the target we actually ship. Without this, cargo-deny walks the
+# dependency graph for every platform and reports crates we never link.
+targets = [{ triple = "riscv32imc-unknown-none-elf" }]
+all-features = true
+
+[advisories]
+# Unlisted advisories are denied by default in this schema version.
+# Add entries here (with a comment and a link) only to accept a known risk.
+ignore = [
+  # `paste` is unmaintained (archived upstream). It is a build-time-only proc
+  # macro pulled in by esp-hal and riscv, not something this project depends on
+  # directly, and there is no vulnerability -- only an unmaintained status. It
+  # can be dropped once the esp-rs crates migrate off it.
+  # https://rustsec.org/advisories/RUSTSEC-2024-0436
+  "RUSTSEC-2024-0436",
+]
+yanked = "deny"
+
+[licenses]
+# The exact set present in the current dependency tree -- all permissive, no
+# copyleft. If a bump introduces something new, CI fails and you get to make a
+# deliberate decision rather than absorbing it silently.
+allow = [
+  "Apache-2.0",
+  "MIT",
+  "ISC",         # riscv, riscv-rt
+  "BSL-1.0",     # ryu
+  "Unicode-3.0", # unicode-ident
+  "Unlicense",   # byteorder, jiff, termcolor
+  "Zlib",        # bytemuck
+]
+confidence-threshold = 0.9
+
+[bans]
+# The esp-rs and embassy trees legitimately carry several major versions of the
+# same crate side by side (embassy-sync 0.6/0.7/0.8, syn 1/2/3, ...), so this is
+# informational rather than a gate.
+multiple-versions = "warn"
+# A `*` version requirement makes builds unreproducible.
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
