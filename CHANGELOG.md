@@ -26,5 +26,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `src/logo.rs` so the OLED artwork and the repository logo cannot drift apart.
 - Two-second boot splash on the OLED, and a small hummingbird on the status
   screen.
+- Chip temperature on the OLED, read from the ESP32-C3's on-chip `tsens`
+  sensor and published to the display through an `embassy_sync::watch::Watch`.
+  The reading is die temperature, not ambient, and is labelled `chip` to say so.
+- `TemperatureSource` trait and a `Source` type alias, so swapping the on-chip
+  sensor for an external I²C part is one impl and one line.
+- `tools/gen-oled-preview.py`, which regenerates the README's OLED preview from
+  the real fonts, bitmaps and layout coordinates.
+
+### Changed
+
+- The status screen shows the temperature where it used to show the blink rate.
+  The LED still blinks and the rate is still logged.
 
 [Unreleased]: https://github.com/marc/kolibri/commits/main

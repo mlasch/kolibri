@@ -1,4 +1,7 @@
-//! Async blinky for the Seeed Studio XIAO ESP32-C3.
+//! Async firmware for the Seeed Studio XIAO ESP32-C3.
+//!
+//! The SH1106 OLED on `D4`/`D5` shows the chip temperature; an LED on `D10`
+//! blinks alongside it to show the tasks really do run concurrently.
 //!
 //! The XIAO ESP32-C3 has **no user-controllable onboard LED** -- the two LEDs on
 //! the board are a hardwired power indicator and a battery-charge indicator. Wire
@@ -8,7 +11,7 @@
 //! GPIO10 (D10) --[150 Ohm]--|>|-- GND
 //! ```
 //!
-//! Every transition is also logged over USB serial, so the firmware is
+//! Everything on the screen is also logged over USB serial, so the firmware is
 //! verifiable with nothing attached but the USB-C cable.
 
 #![no_std]
@@ -19,11 +22,11 @@ use core::fmt::Write;
 use display_interface_i2c::I2CInterface;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal, watch::Watch};
 use embassy_time::{Duration, Ticker, Timer};
 use embedded_graphics::{
     image::Image,
-    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    mono_font::{MonoTextStyle, ascii::FONT_6X10, iso_8859_1::FONT_10X20},
     pixelcolor::BinaryColor,
     prelude::*,
     primitives::{PrimitiveStyle, Rectangle},
@@ -34,8 +37,10 @@ use esp_hal::{
     Async,
     gpio::{Level, Output, OutputConfig},
     i2c::master::{Config as I2cConfig, I2c},
+    peripherals::TSENS,
     time::Rate,
     timer::timg::TimerGroup,
+    tsens::{Config as TsensConfig, ConfigError, TemperatureSensor},
 };
 use oled_async::{Builder, displays::sh1106::Sh1106_128_64, mode::GraphicsMode};
 
@@ -64,6 +69,11 @@ const DISPLAY_PERIOD: Duration = Duration::from_secs(1);
 
 /// How long the boot splash stays up before the status screen replaces it.
 const SPLASH_PERIOD: Duration = Duration::from_secs(2);
+
+/// How often the temperature source is sampled. Deliberately not the same as
+/// [`DISPLAY_PERIOD`]: sampling a sensor and repainting a panel are separate
+/// jobs, and neither should be pinned to the other's rate.
+const TEMPERATURE_PERIOD: Duration = Duration::from_secs(2);
 
 /// I2C address of the SH1106 module. Almost all of them are `0x3C`; boards with
 /// the SA0 jumper bridged answer on `0x3D` instead.
@@ -106,12 +116,13 @@ type Display = GraphicsMode<Sh1106_128_64, I2CInterface<I2c<'static, Async>>, DI
 /// it (and the `select` in [`blink`]) if you only ever need a fixed rate.
 static BLINK_PERIOD_REQUEST: Signal<CriticalSectionRawMutex, Duration> = Signal::new();
 
-/// Mirrors [`BLINK_PERIOD_REQUEST`] to the display.
+/// The most recent temperature reading, written by [`temperature`] and read by
+/// [`display`].
 ///
-/// A `Signal` has exactly one consumer -- whoever calls `wait` takes the value
-/// and it is gone. Two readers therefore need two signals. Reach for
-/// `embassy_sync::watch::Watch` instead once a third task wants the same value.
-static DISPLAY_PERIOD_REQUEST: Signal<CriticalSectionRawMutex, Duration> = Signal::new();
+/// A `Watch` rather than a `Signal` because a redraw wants *the current value*,
+/// not a one-shot notification: `Signal::wait` consumes what it returns, so the
+/// reading would vanish from the frame after next. `Watch::try_get` only looks.
+static TEMPERATURE: Watch<CriticalSectionRawMutex, Celsius, 1> = Watch::new();
 
 /// A fixed-capacity sink for `write!`, so text can be formatted on the stack.
 ///
@@ -147,6 +158,97 @@ impl<const N: usize> Write for TextBuf<N> {
         self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
         self.len += s.len();
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Temperature
+// ---------------------------------------------------------------------------
+
+/// A temperature, in tenths of a degree Celsius.
+///
+/// Integer tenths rather than `f32` on purpose: the C3 has no FPU, and `core`'s
+/// float formatter is several KiB of flash to print a number this screen shows
+/// to one decimal place anyway.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Celsius(i16);
+
+impl Celsius {
+    /// Truncates toward zero, which is well inside the sensor's accuracy.
+    fn from_degrees(degrees: f32) -> Self {
+        Self((degrees * 10.0) as i16)
+    }
+}
+
+impl core::fmt::Display for Celsius {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let whole = self.0 / 10;
+        let frac = (self.0 % 10).unsigned_abs();
+        // Integer division drops the sign between -0.9 and 0.0, so write it out.
+        let sign = if self.0 < 0 && whole == 0 { "-" } else { "" };
+        write!(f, "{sign}{whole}.{frac}")
+    }
+}
+
+/// Something that can be asked for a temperature.
+///
+/// The point of the trait is that [`Source`] is the only line that has to
+/// change to read from somewhere else -- an `SHT4x` or `BME280` hanging off the
+/// same D4/D5 bus, say. `read` is `async` for that reason: the on-chip sensor
+/// is a register read, but an I2C part is not.
+trait TemperatureSource {
+    /// What the reading actually describes. It goes on the status screen, so
+    /// keep it short and keep it honest.
+    const LABEL: &'static str;
+
+    /// How long to wait after power-up before the first reading is trustworthy.
+    const WARMUP: Duration;
+
+    /// Returns `None` if this particular reading could not be taken. A source is
+    /// expected to survive that, so the caller retries instead of giving up.
+    async fn read(&mut self) -> Option<Celsius>;
+}
+
+/// Where the status screen gets its temperature. Point this at a different
+/// [`TemperatureSource`] impl to change sensors; nothing else needs editing.
+type Source = InternalSensor;
+
+/// The ESP32-C3's built-in temperature sensor.
+///
+/// **This is die temperature, not room temperature.** Espressif's own docs note
+/// that the internal reading runs above ambient, and how far above depends on
+/// clock speed, I/O load and especially radio activity -- 10-20 C over the room
+/// is normal on an idle board. esp-hal 1.2 also leaves the calibration offset
+/// hardcoded (`tsens.rs` still carries a `TODO Address multiple temperature
+/// ranges and offsets`), so the absolute number is indicative and the *changes*
+/// are what mean something. Hence the `chip` label on screen: the display
+/// should not claim to be a thermometer.
+struct InternalSensor {
+    sensor: TemperatureSensor<'static>,
+}
+
+impl InternalSensor {
+    /// Powers the sensor up. `ConfigError` is an empty enum today so this cannot
+    /// actually fail, but it is `#[non_exhaustive]` and so stays a `Result`.
+    fn new(peripheral: TSENS<'static>) -> Result<Self, ConfigError> {
+        Ok(Self {
+            sensor: TemperatureSensor::new(peripheral, TsensConfig::default())?,
+        })
+    }
+}
+
+impl TemperatureSource for InternalSensor {
+    const LABEL: &'static str = "chip";
+    /// The TRM asks for a few hundred microseconds of settling after power-up.
+    const WARMUP: Duration = Duration::from_micros(200);
+
+    // Nothing to await for a register read, but the trait has to stay async for
+    // the I2C sensors this is meant to be swappable with.
+    #[allow(clippy::unused_async_trait_impl)]
+    async fn read(&mut self) -> Option<Celsius> {
+        Some(Celsius::from_degrees(
+            self.sensor.get_temperature().to_celsius(),
+        ))
     }
 }
 
@@ -204,13 +306,41 @@ async fn heartbeat() {
             "heartbeat (uptime {} s)",
             embassy_time::Instant::now().as_secs()
         );
-        let period = if fast {
+        BLINK_PERIOD_REQUEST.signal(if fast {
             BLINK_PERIOD_FAST
         } else {
             BLINK_PERIOD
-        };
-        BLINK_PERIOD_REQUEST.signal(period);
-        DISPLAY_PERIOD_REQUEST.signal(period);
+        });
+    }
+}
+
+/// Samples the temperature source and publishes each reading to [`TEMPERATURE`].
+///
+/// Kept out of [`display`] so the sampling and redraw rates stay independent,
+/// and so a sensor that stalls cannot take the screen down with it. Swapping in
+/// an I2C part means it has to share the bus with the panel: wrap the `I2c` in
+/// an `embassy_sync::mutex::Mutex` and hand each task an `I2cDevice` at that
+/// point.
+#[embassy_executor::task]
+async fn temperature(mut source: Source) {
+    let sender = TEMPERATURE.sender();
+
+    // Sensors need a moment after power-up before the first reading means
+    // anything. Awaited, so the other tasks keep running through it.
+    Timer::after(Source::WARMUP).await;
+
+    let mut ticker = Ticker::every(TEMPERATURE_PERIOD);
+
+    loop {
+        match source.read().await {
+            Some(reading) => {
+                log::info!("{} temperature {reading} C", Source::LABEL);
+                sender.send(reading);
+            }
+            // Leaves the last good value on screen rather than blanking it.
+            None => log::warn!("temperature read failed"),
+        }
+        ticker.next().await;
     }
 }
 
@@ -255,7 +385,7 @@ async fn splash(display: &mut Display) {
     Timer::after(SPLASH_PERIOD).await;
 }
 
-/// Renders status to the OLED once per second.
+/// Renders the temperature to the OLED once per second.
 ///
 /// Redrawing is a two-stage affair: `embedded-graphics` calls mutate an
 /// in-memory framebuffer, and nothing reaches the panel until `flush`. Drawing
@@ -263,6 +393,11 @@ async fn splash(display: &mut Display) {
 #[embassy_executor::task]
 async fn display(mut display: Display) {
     let text = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    // The reading gets the big font, and an ISO 8859-1 one rather than ASCII so
+    // that the degree sign is a real glyph instead of the replacement box. That
+    // costs 4.8 KiB of flash against 2.4 KiB for the ASCII sheet; the rest of
+    // the screen stays on the 720-byte 6x10 ASCII font.
+    let reading = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
     let border = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
 
     // `init` is where a wrong I2C address or unpowered panel shows up, so it is
@@ -275,45 +410,56 @@ async fn display(mut display: Display) {
 
     splash(&mut display).await;
 
-    let mut period = BLINK_PERIOD;
     let mut ticker = Ticker::every(DISPLAY_PERIOD);
 
     loop {
-        // Same shape as `blink`: tick on a schedule, but react to a new period
-        // the moment it arrives rather than at the next redraw.
-        match select(ticker.next(), DISPLAY_PERIOD_REQUEST.wait()).await {
-            Either::First(()) => {}
-            Either::Second(new_period) => period = new_period,
-        }
+        ticker.next().await;
 
         display.clear();
 
-        let mut line = TextBuf::<24>::new();
-        let _ = write!(line, "up {} s", embassy_time::Instant::now().as_secs());
+        // `try_get` reads the latest reading without consuming it, so every
+        // frame sees it until a newer one arrives. `None` only until the first
+        // sample lands, which happens during the splash -- so in practice the
+        // placeholder is only ever seen if the very first read fails.
+        let mut value = TextBuf::<16>::new();
+        let _ = match TEMPERATURE.try_get() {
+            Some(celsius) => write!(value, "{celsius} \u{00b0}C"),
+            None => write!(value, "--.- \u{00b0}C"),
+        };
 
-        let mut rate = TextBuf::<24>::new();
-        let _ = write!(rate, "blink {} ms", period.as_millis());
+        let mut status = TextBuf::<24>::new();
+        let _ = write!(
+            status,
+            "{}  up {} s",
+            Source::LABEL,
+            embassy_time::Instant::now().as_secs()
+        );
 
+        // Layout on the 128x64 panel, everything inside the 1 px border:
+        //   y  3..33  the bird, x 86..126
+        //   y  4..14  "kolibri"
+        //   y 20..40  the reading -- at most 8 chars at 10 px, so x 5..85,
+        //             which stays clear of the bird even at "-12.3 C"
+        //   y 46..56  source label and uptime
+        //
         // Drawing only touches the framebuffer, so these cannot fail in
         // practice -- but embedded-graphics is generic over targets that can.
         let drawn = Rectangle::new(Point::zero(), Size::new(128, 64))
             .into_styled(border)
             .draw(&mut display)
-            // Top right, clear of the widest line the text below can grow to
-            // ("blink 500 ms" ends at x = 78).
-            .and_then(|()| Image::new(&logo::SMALL, Point::new(84, 6)).draw(&mut display))
+            .and_then(|()| Image::new(&logo::SMALL, Point::new(86, 3)).draw(&mut display))
             .and_then(|()| {
-                Text::with_baseline("kolibri", Point::new(6, 6), text, Baseline::Top)
+                Text::with_baseline("kolibri", Point::new(5, 4), text, Baseline::Top)
                     .draw(&mut display)
                     .map(|_| ())
             })
             .and_then(|()| {
-                Text::with_baseline(line.as_str(), Point::new(6, 24), text, Baseline::Top)
+                Text::with_baseline(value.as_str(), Point::new(5, 20), reading, Baseline::Top)
                     .draw(&mut display)
                     .map(|_| ())
             })
             .and_then(|()| {
-                Text::with_baseline(rate.as_str(), Point::new(6, 38), text, Baseline::Top)
+                Text::with_baseline(status.as_str(), Point::new(5, 46), text, Baseline::Top)
                     .draw(&mut display)
                     .map(|_| ())
             });
@@ -375,10 +521,16 @@ async fn main(spawner: Spawner) {
         .connect(I2CInterface::new(i2c, DISPLAY_ADDRESS, DISPLAY_DATA_BYTE))
         .into();
 
+    // The on-chip sensor is an ordinary peripheral singleton, so pointing
+    // `Source` at an external sensor means building that here instead and
+    // handing it to `temperature`.
+    let sensor = Source::new(peripherals.TSENS).expect("temperature sensor config rejected");
+
     // A task function returns Err only when its pool is already full, which for
     // a single-instance task spawned once can never happen.
     spawner.spawn(blink(led).expect("blink task pool exhausted"));
     spawner.spawn(heartbeat().expect("heartbeat task pool exhausted"));
+    spawner.spawn(temperature(sensor).expect("temperature task pool exhausted"));
     spawner.spawn(display(oled).expect("display task pool exhausted"));
 
     // Nothing left to do here. Returning from an Embassy `main` is fine -- the
