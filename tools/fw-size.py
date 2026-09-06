@@ -354,11 +354,19 @@ def measure_image(elf: Path, chip: str, flashed: Path | None) -> Image | None:
 
 
 def command_output(*argv: str) -> str | None:
-    """Run a command for its first line of output, or None if it will not run."""
+    """The command's first line of output, "" if it printed none, None if it failed.
+
+    The three cases are distinct and all of them come up: rustc prints a
+    version, `git status --porcelain` prints nothing at all when the tree is
+    clean, and neither command exists on a machine that has not got them.
+    """
     if shutil.which(argv[0]) is None:
         return None
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
-    return result.stdout.strip().splitlines()[0] if result.returncode == 0 else None
+    if result.returncode != 0:
+        return None
+    lines = result.stdout.strip().splitlines()
+    return lines[0] if lines else ""
 
 
 def snapshot(
