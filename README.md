@@ -365,6 +365,26 @@ python3 tools/fw-size.py \
     target/riscv32imc-unknown-none-elf/release/kolibri --chip esp32c3
 ```
 
+### Comparing against main
+
+The same step writes `size-metadata.json`: the measurements, what was measured
+(board, chip, target, profile), and the commit, toolchain and CI run behind
+them. Every push to `main` publishes it as the `size-baseline-<board>`
+artifact, and every pull request downloads the newest one and reports the
+change against it — so a PR that costs 4 KB of flash says so, in the comment,
+before it is merged.
+
+A baseline is only used when it describes the same board, chip, target and
+profile; anything else is ignored with a note rather than subtracted. A missing
+baseline — the first run, or one aged out past GitHub's 90-day artifact
+retention — drops the change column and nothing else. To compare two builds
+locally:
+
+```sh
+python3 tools/fw-size.py … --json before.json   # on main
+python3 tools/fw-size.py … --baseline before.json
+```
+
 Dependabot proposes weekly `cargo` and `github-actions` updates, grouped so the
 esp-rs and Embassy crates move together. One `cargo` entry covers the whole
 workspace.
