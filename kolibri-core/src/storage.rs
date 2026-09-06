@@ -503,6 +503,46 @@ mod tests {
         ));
     }
 
+    /// The provisioning script writes this same envelope from the host, and
+    /// nothing else checks that the two agree. Here it builds an image sized
+    /// for the mock flash above, and the store has to read the payload back --
+    /// so a change to the format on either side fails here rather than on a
+    /// board that quietly ignores the record it was provisioned with.
+    #[test]
+    fn the_provisioning_script_writes_a_record_this_store_accepts() {
+        // `no_std` means no prelude for these, even with std linked for tests.
+        use std::{format, string::ToString};
+
+        let out =
+            std::env::temp_dir().join(format!("kolibri-provisioned-{}.bin", std::process::id()));
+        let status = std::process::Command::new("python3")
+            .args(["../tools/mk-settings.py", "--hex", "de ad be ef"])
+            .args(["--storage", "src/storage.rs"])
+            // Non-zero, so that a header field written at the wrong offset
+            // shows up as a difference rather than as another run of zeros.
+            .args(["--sequence", "7"])
+            .args(["--erase-size", &SECTOR.to_string()])
+            .args(["--capacity", &PAYLOAD.to_string()])
+            .arg("--out")
+            .arg(&out)
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("python3 is needed to check the provisioning script");
+        assert!(status.success(), "tools/mk-settings.py failed");
+
+        let image = std::fs::read(&out).expect("the script wrote an image");
+        std::fs::remove_file(&out).ok();
+        assert_eq!(image.len(), CAPACITY);
+
+        let mut flash = Ram::new();
+        flash.bytes.copy_from_slice(&image);
+
+        let mut store = Store::<Ram, PAYLOAD>::new(flash).expect("the image fits the mock flash");
+        let mut buf = [0u8; PAYLOAD];
+        assert_eq!(store.load(&mut buf), Ok(Some(4)));
+        assert_eq!(&buf[..4], &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
     #[test]
     fn crc32_matches_the_reference_check_value() {
         // The standard CRC-32 check value for b"123456789".

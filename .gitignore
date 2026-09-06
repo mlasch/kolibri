@@ -31,3 +31,7 @@ Thumbs.db
 /size-report.md
 /size-metadata.json
 /baseline/
+
+# Byte-compiled Python from the scripts under tools/. Provisioning images from
+# tools/mk-settings.py are already covered by *.bin above.
+__pycache__/
