@@ -25,3 +25,6 @@
 .idea/
 .DS_Store
 Thumbs.db
+
+# Reports written by tools/fw-size.py --out
+/size-report.md

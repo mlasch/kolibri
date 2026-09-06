@@ -45,6 +45,10 @@ jobs:
   board:
     name: ${{ matrix.board }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The size report is posted as a pull request comment.
+      pull-requests: write
     strategy:
       fail-fast: false
       matrix:
@@ -101,12 +105,53 @@ jobs:
             --skip-padding \
             firmware.bin
 
+      # Neither number is visible anywhere else: cargo prints nothing about
+      # size, and the ELF is mostly debug info. The report is derived from the
+      # ELF's own sections and the linker's memory.x, so it cannot drift.
+      - name: Measure flash and RAM usage
+        run: |
+          python3 tools/fw-size.py \
+            target/${{ matrix.target }}/release/kolibri \
+            --chip ${{ matrix.chip }} \
+            --image firmware.bin \
+            --label ${{ matrix.board }} \
+            --format markdown \
+            --marker '<!-- kolibri-size-report:${{ matrix.board }} -->' \
+            --out size-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # One comment per board, rewritten in place on every push rather than
+      # added to, so the PR carries the sizes of the head commit and not a
+      # transcript of every commit before it. Skipped for pull requests from
+      # forks, where GITHUB_TOKEN is read-only: the report is still in the job
+      # summary and the artifact.
+      - name: Post the size report to the pull request
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          MARKER: '<!-- kolibri-size-report:${{ matrix.board }} -->'
+        run: |
+          existing=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --paginate \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1)
+          if [ -n "$existing" ]; then
+            gh api -X PATCH \
+              "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
+              -F body=@size-report.md
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+              -F body=@size-report.md
+          fi
+
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: firmware-${{ matrix.board }}
           path: |
             firmware.bin
+            size-report.md
             target/${{ matrix.target }}/release/kolibri
           if-no-files-found: error
 
