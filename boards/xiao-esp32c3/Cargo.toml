@@ -33,7 +33,19 @@ esp-hal = { version = "1.2.0", features = ["esp32c3", "unstable", "log-04"] }
 # esp-rtos replaces the retired esp-hal-embassy: it provides the embassy time
 # driver and the executor that #[esp_hal::main] expands into.
 esp-rtos = { version = "0.4.0", features = ["esp32c3", "embassy", "log-04"] }
-esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
+# `embedded-storage` turns a partition into the NorFlash region
+# kolibri_core::storage writes its record to.
+esp-bootloader-esp-idf = { version = "0.6.0", features = [
+  "esp32c3",
+  "embedded-storage",
+] }
+# Named here only to get its `critical-section` feature back on. esp-bootloader
+# depends on esp-storage with default-features = false, and without that feature
+# a flash erase or write runs with interrupts enabled -- any handler that is not
+# in IRAM would then execute from a flash chip that is busy, which faults.
+# Cargo unifies features across the graph, so declaring it here fixes it for
+# esp-bootloader's use of the crate too.
+esp-storage = { version = "0.10.0", features = ["esp32c3"] }
 esp-println = { version = "0.18.0", features = ["esp32c3", "log-04"] }
 esp-backtrace = { version = "0.20.0", features = [
   "esp32c3",

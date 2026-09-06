@@ -257,12 +257,14 @@ A Cargo workspace: one portable crate, one crate per board.
 | [`kolibri-core/src/temperature.rs`](kolibri-core/src/temperature.rs) | `Celsius`, the `Source` trait, and the sampling loop |
 | [`kolibri-core/src/display.rs`](kolibri-core/src/display.rs) | The `Panel` trait, the SH1106 helper, and the screen |
 | [`kolibri-core/src/logo.rs`](kolibri-core/src/logo.rs) | Generated 1-bpp hummingbird bitmaps for the OLED |
+| [`kolibri-core/src/storage.rs`](kolibri-core/src/storage.rs) | One small record kept in NOR flash across a power cycle |
 | [`boards/README.md`](boards/README.md) | **How to add a board, and what porting actually costs** |
 | [`boards/xiao-esp32c3/src/main.rs`](boards/xiao-esp32c3/src/main.rs) | Entry point, pin map, on-chip sensor, task declarations |
 | [`boards/xiao-esp32c3/.cargo/config.toml`](boards/xiao-esp32c3/.cargo/config.toml) | Target, linker flags, `cargo run` runner |
 | [`assets/`](assets/) | Logo master, wordmarks, and the OLED preview |
 | [`tools/gen-logo.py`](tools/gen-logo.py) | Regenerates `kolibri-core/src/logo.rs` from the logo master |
 | [`tools/gen-oled-preview.py`](tools/gen-oled-preview.py) | Regenerates the README's OLED preview from the real layout |
+| [`tools/mk-settings.py`](tools/mk-settings.py) | Builds a flash image so a board boots already provisioned |
 | [`rust-toolchain.toml`](rust-toolchain.toml) | Pinned toolchain + one target per board |
 | [`deny.toml`](deny.toml) | Dependency licence / advisory policy |
 | [`.vscode/`](.vscode/) | Settings, tasks, extensions, debug configs |
@@ -311,6 +313,77 @@ at the top of
 in `kolibri-core`: `blink::PERIOD` and `blink::PERIOD_FAST`,
 `heartbeat::PERIOD`, `display::PERIOD` and `display::SPLASH_PERIOD`, and
 `temperature::PERIOD`.
+
+### Storing settings in flash
+
+`kolibri_core::storage` keeps one small record — a few hundred bytes at most —
+somewhere it survives a reset, a power cut and a reflash. It exists for the
+Wi-Fi credentials that come next; today it holds a boot counter, which is the
+smallest payload that proves the whole path works on real hardware:
+
+```text
+INFO - kolibri starting on XIAO ESP32-C3
+INFO - boot #7
+```
+
+NOR flash cannot be updated in place, so erasing the only copy and losing power
+mid-write would lose the data. The store therefore keeps **two slots**, one
+erase block each, and alternates: a save erases the older slot, writes the
+payload, then writes the header — magic, format version, length, sequence
+number and CRC-32 — last. Until that header is on flash the slot does not
+count, so an interrupted save leaves the previous record exactly as it was, and
+a load takes the valid slot with the higher sequence number.
+
+It is deliberately not a filesystem or a key-value store: one record, rewritten
+whole. For independently updatable keys or wear levelling across a large
+partition, `sequential-storage` is the crate to reach for.
+
+The record lives in the **`nvs` partition** (`0x9000`, 24 KiB) that espflash
+puts in its default partition table. The bytes there are kolibri's format, not
+ESP-IDF's NVS format — nothing in a `no_std` build reads ESP-IDF's. `espflash
+flash` rewrites only the bootloader, the partition table and the app, so the
+record survives a reflash. To wipe it:
+
+```sh
+espflash erase-region 0x9000 0x6000
+```
+
+#### Provisioning a board from the host
+
+Rather than teaching each board its settings over a serial console,
+[`tools/mk-settings.py`](tools/mk-settings.py) builds the record on the host and
+flashes it:
+
+```sh
+python3 tools/mk-settings.py --boot-count 41     # writes settings.bin
+espflash write-bin 0x9000 settings.bin           # or add --flash to do both
+```
+
+The image covers **both** slots — the provisioned record in slot 0 and an
+erased slot 1 — because writing only slot 0 would leave a stale record with a
+higher sequence number to win the next load.
+
+To see what a board is carrying, read the region back and decode it:
+
+```sh
+espflash read-flash 0x9000 0x2000 dump.bin
+python3 tools/mk-settings.py --inspect dump.bin
+```
+
+The script owns the envelope; the payload is whatever the firmware reads.
+`--boot-count` writes the `u32` today's firmware expects, and `--text`, `--hex`
+and `--file` put arbitrary bytes there for whatever replaces it. The magic,
+format version, header length and slot count are parsed straight out of
+`storage.rs`, and a unit test builds an image with the script and loads it
+through the real `Store`, so the two implementations cannot drift apart without
+CI noticing.
+
+Because it is written against `embedded_storage::nor_flash::NorFlash` rather
+than against esp-storage, the same module works on any board that can hand over
+an erasable region, and its format is unit-tested on the host — see the tests at
+the bottom of [`kolibri-core/src/storage.rs`](kolibri-core/src/storage.rs),
+which run in CI against a mock flash that models erase-to-ones and
+write-only-clears-bits.
 
 ---
 

@@ -29,12 +29,20 @@ explains which layer a change belongs in, and how to add a board.
 ```sh
 cargo fmt --all --check
 cargo clippy -p kolibri-core --all-features -- -D warnings   # host target
+cargo test -p kolibri-core --all-features                   # host target
 
 cd boards/xiao-esp32c3
 cargo clippy --all-features -- -D warnings
 cargo build --release
 cargo run --release          # on hardware
 ```
+
+Only `kolibri-core` has tests: it is the half that builds for the host, so a
+format that has to survive a power cycle can be checked without a board on the
+desk. Board crates are `no_std` binaries with nothing to link a test harness
+against. One of those tests shells out to `python3 tools/mk-settings.py` and
+loads what it produces, which is what keeps the provisioning script and the
+firmware reading the same format; `python3` therefore has to be on PATH.
 
 Board commands have to run from inside the board directory: that is how Cargo
 finds its `.cargo/config.toml`, and with it the target triple, the linker script

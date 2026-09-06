@@ -28,9 +28,15 @@
 
 #![no_std]
 
+// The unit tests run on the host, where the test harness itself needs `std`.
+// The library never does: nothing outside `#[cfg(test)]` may use this.
+#[cfg(test)]
+extern crate std;
+
 pub mod blink;
 pub mod display;
 pub mod heartbeat;
 pub mod logo;
+pub mod storage;
 pub mod temperature;
 pub mod text;

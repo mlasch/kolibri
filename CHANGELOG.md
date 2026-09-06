@@ -42,6 +42,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced them, and the CI run that published them. Every push to `main`
   uploads it as the `size-baseline-<board>` artifact, and each pull request
   downloads the newest one to report the change in consumption against it.
+- `kolibri_core::storage`: one small record kept across a power cycle, written
+  against `embedded-storage`'s NOR-flash traits so it is not tied to a chip. Two
+  slots of one erase block each are alternated, and the header — magic, format
+  version, length, sequence number, CRC-32 — is written last, so an interrupted
+  save leaves the previous record intact. The XIAO ESP32-C3 firmware points it
+  at the `nvs` partition and counts boots in it, which is the smallest payload
+  that exercises partition lookup, checksum and slot alternation on hardware;
+  Wi-Fi credentials will replace it.
+- Host unit tests for that format, run by CI, against a mock flash that models
+  erase-to-ones and write-only-clears-bits.
+- `tools/mk-settings.py`, which builds that record on the host so a board can be
+  flashed already provisioned (`--boot-count`, `--text`, `--hex`, `--file`), and
+  decodes a region read back off a device with `--inspect`. It parses the format
+  constants out of `storage.rs` instead of restating them, and one of the unit
+  tests provisions an image with it and loads it through the real `Store`, so
+  the Python and the Rust cannot drift apart unnoticed.
 - `boards/README.md`: which layers Embassy makes portable and which it does not,
   and the six steps to add a board.
 
