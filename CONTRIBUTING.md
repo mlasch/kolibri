@@ -40,6 +40,14 @@ Board commands have to run from inside the board directory: that is how Cargo
 finds its `.cargo/config.toml`, and with it the target triple, the linker script
 and the flashing runner.
 
+Flash and RAM are finite in a way a host program's are not, so CI reports both
+per board and comments the numbers on the PR. To see them before you push:
+
+```sh
+python3 tools/fw-size.py \
+    target/riscv32imc-unknown-none-elf/release/kolibri --chip esp32c3
+```
+
 CI runs all of the above plus `cargo deny`. Warnings are errors, so please don't
 `#[allow]` your way past a lint without a comment explaining why.
 

@@ -354,6 +354,17 @@ artifact:
 espflash write-bin 0x0 firmware.bin   # flash a CI artifact directly
 ```
 
+Each board also reports what it costs the chip — the app image against the
+partition it has to fit in, and static SRAM against the regions the linker was
+given. The report goes to the job summary, into the artifact as
+`size-report.md`, and onto the pull request as a comment that is rewritten in
+place on every push. Run it yourself with:
+
+```sh
+python3 tools/fw-size.py \
+    target/riscv32imc-unknown-none-elf/release/kolibri --chip esp32c3
+```
+
 Dependabot proposes weekly `cargo` and `github-actions` updates, grouped so the
 esp-rs and Embassy crates move together. One `cargo` entry covers the whole
 workspace.

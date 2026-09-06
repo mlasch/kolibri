@@ -33,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the on-chip sensor for an external I²C part is one impl and one line.
 - `tools/gen-oled-preview.py`, which regenerates the README's OLED preview from
   the real fonts, bitmaps and layout coordinates.
+- `tools/fw-size.py`, which reports flash and RAM consumption from the linked
+  ELF and the linker's own `memory.x`. CI runs it per board, writes the report
+  to the job summary and the build artifact, and posts it as a pull request
+  comment that is rewritten in place on every push.
 - `boards/README.md`: which layers Embassy makes portable and which it does not,
   and the six steps to add a board.
 
