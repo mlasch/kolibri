@@ -72,6 +72,12 @@ CI runs all of the above plus `cargo deny`. Warnings are errors, so please don't
 A short imperative subject line (`Add I2C display driver`), and a body
 explaining *why* if it isn't obvious. No strict format is enforced.
 
+Describe what the change does and why, and nothing else. Leave out filler prose
+and leave out what the change does *not* do -- testing status, deferred work,
+caveats. Those go stale the moment the state changes, and the commit is a record
+of the change, not of the moment it was written. If it matters, it belongs in
+the PR or an issue.
+
 ## Licence
 
 By contributing you agree that your work is licensed under the same
