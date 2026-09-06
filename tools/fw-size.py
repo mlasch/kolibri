@@ -24,14 +24,22 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import shutil
 import struct
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Bumped when the metadata file's shape changes in a way that makes an older
+# file unreadable. A baseline written by a different schema is ignored rather
+# than misread -- comparing the wrong fields is how you get a confident wrong
+# answer.
+SCHEMA = 1
 
 # ELF constants. Only the 32-bit little-endian flavour is handled: every target
 # this project can plausibly grow to (RISC-V, Xtensa, Cortex-M) is ELF32.
@@ -341,6 +349,138 @@ def measure_image(elf: Path, chip: str, flashed: Path | None) -> Image | None:
 
 
 # ---------------------------------------------------------------------------
+# Metadata
+# ---------------------------------------------------------------------------
+
+
+def command_output(*argv: str) -> str | None:
+    """Run a command for its first line of output, or None if it will not run."""
+    if shutil.which(argv[0]) is None:
+        return None
+    result = subprocess.run(argv, capture_output=True, text=True, check=False)
+    return result.stdout.strip().splitlines()[0] if result.returncode == 0 else None
+
+
+def snapshot(
+    regions: dict[str, Region],
+    image: Image | None,
+    label: str,
+    elf: Path,
+    chip: str | None,
+    ci: dict[str, str],
+) -> dict:
+    """Everything a later run needs to compare itself against this one.
+
+    The measurements are the point, but they are meaningless without what was
+    measured: a report is only comparable against another build of the same
+    board, for the same chip and target, at the same optimisation level. Those
+    four fields are what a comparison checks before it subtracts anything.
+
+    The provenance -- commit, toolchain, CI run -- is what makes a difference
+    explainable once one shows up. A jump in .text between two builds means
+    something quite different if the compiler version moved underneath them.
+    """
+    placed = [r for r in regions.values() if r.sections]
+    # target/<triple>/<profile>/<binary> is how Cargo lays out a cross build.
+    profile, triple = elf.parent.name, elf.parent.parent.name
+    commit = command_output("git", "rev-parse", "HEAD")
+
+    return {
+        "schema": SCHEMA,
+        "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # What was measured. A comparison is only valid within one of these.
+        "firmware": {
+            "label": label,
+            "chip": chip,
+            "target": triple if triple != "target" else None,
+            "profile": profile,
+            "binary": elf.name,
+        },
+        "source": {
+            "commit": commit,
+            # A dirty tree explains a difference that the commit alone cannot.
+            "dirty": bool(command_output("git", "status", "--porcelain")),
+        },
+        "toolchain": {
+            "rustc": command_output("rustc", "--version"),
+            "espflash": command_output("espflash", "--version"),
+        },
+        "ci": ci,
+        "flash": {
+            "app": image.app if image else None,
+            "partition": image.partition if image else None,
+            "flashed": image.flashed if image else None,
+            "section_contents": sum(
+                s.size for r in placed for s in r.sections if s.in_flash
+            ),
+        },
+        "sram": {
+            region.name: {
+                "origin": f"0x{region.origin:08x}",
+                "length": region.length,
+                "used": region.used,
+                "padding": region.padding,
+                "stack": region.stack,
+            }
+            for region in placed
+            if not region.is_flash
+        },
+        "sections": {
+            section.name: {"address": f"0x{section.addr:08x}", "size": section.size}
+            for region in placed
+            for section in region.sections
+        },
+    }
+
+
+def load_baseline(path: Path, current: dict) -> dict | None:
+    """Read a baseline, unless it describes a different firmware.
+
+    Refusing to compare is the useful behaviour here: a delta between two
+    different boards, or between a debug and a release build, is a number that
+    means nothing and reads like it means something.
+    """
+    try:
+        baseline = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"note: ignoring baseline {path}: {error}", file=sys.stderr)
+        return None
+
+    if baseline.get("schema") != SCHEMA:
+        print(
+            f"note: ignoring baseline {path}: schema {baseline.get('schema')},"
+            f" this is {SCHEMA}",
+            file=sys.stderr,
+        )
+        return None
+
+    comparable = ("label", "chip", "target", "profile")
+    was, now = baseline.get("firmware", {}), current["firmware"]
+    differs = [key for key in comparable if was.get(key) != now[key]]
+    if differs:
+        print(
+            f"note: ignoring baseline {path}: it is a different firmware ("
+            + ", ".join(f"{key} {was.get(key)!r} vs {now[key]!r}" for key in differs)
+            + ")",
+            file=sys.stderr,
+        )
+        return None
+    return baseline
+
+
+def change(now: int | None, before: int | None) -> str:
+    """Describe a difference in a way that is honest about not knowing."""
+    if now is None or before is None:
+        return "-"
+    difference = now - before
+    if difference == 0:
+        return "no change"
+    if before == 0:
+        return f"{difference:+,}"
+    return f"{difference:+,} ({100 * difference / before:+.1f}%)"
+
+
+# ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
@@ -355,11 +495,20 @@ def render(
     label: str,
     markdown: bool,
     marker: str | None,
+    baseline: dict | None = None,
 ) -> str:
     """Build the report. The markdown flavour is what CI posts to a PR."""
     placed = [r for r in regions.values() if r.sections]
     ram = [r for r in placed if not r.is_flash]
     resident = sum(s.size for r in placed for s in r.sections if s.in_flash)
+
+    # Every table gains a change column, or none of them do: a report where
+    # some rows carry a delta and others silently do not is a trap.
+    was_flash = (baseline or {}).get("flash", {})
+    was_sram = (baseline or {}).get("sram", {})
+
+    def deltas(*cells: str) -> tuple[str, ...]:
+        return cells if baseline else ()
 
     out: list[str] = []
     if marker:
@@ -372,6 +521,7 @@ def render(
             (
                 "app image",
                 f"{image.app:,}",
+                *deltas(change(image.app, was_flash.get("app"))),
                 f"{percent(image.app, image.partition)} of the"
                 f" {image.partition:,}-byte app partition",
             )
@@ -381,6 +531,7 @@ def render(
                 (
                     "flashed image",
                     f"{image.flashed:,}",
+                    *deltas(change(image.flashed, was_flash.get("flashed"))),
                     "bootloader + partition table + app",
                 )
             )
@@ -388,11 +539,12 @@ def render(
             (
                 "section contents",
                 f"{resident:,}",
+                *deltas(change(resident, was_flash.get("section_contents"))),
                 "the rest of the app image is segment headers and"
                 " 64 KB cache-alignment padding",
             )
         )
-        out += table(["", "bytes", ""], rows, markdown)
+        out += table(["", "bytes", *deltas("change"), ""], rows, markdown)
 
     out += heading("SRAM at boot", 3, markdown)
     rows = []
@@ -406,12 +558,15 @@ def render(
             (
                 region.name,
                 f"{region.used:,}",
+                *deltas(change(region.used, was_sram.get(region.name, {}).get("used"))),
                 f"{region.length:,}",
                 percent(region.used, region.length),
                 "; ".join(notes),
             )
         )
-    out += table(["region", "used", "size", "", ""], rows, markdown)
+    out += table(["region", "used", *deltas("change"), "size", "", ""], rows, markdown)
+    if baseline:
+        out += ["", provenance(baseline)]
     out += [
         "",
         "Static allocation only -- the picture before `main` runs, which says"
@@ -436,6 +591,28 @@ def render(
         out += ["", "</details>"]
 
     return "\n".join(out).strip() + "\n"
+
+
+def provenance(baseline: dict) -> str:
+    """Say which build the change column is measured against.
+
+    A delta with no stated reference point is not a measurement, and the
+    baseline can be several commits behind whatever this PR is rebased on.
+    """
+    commit = (baseline.get("source") or {}).get("commit")
+    where = [f"`{commit[:9]}`"] if commit else []
+    ci = baseline.get("ci") or {}
+    if ci.get("ref"):
+        where.append(str(ci["ref"]))
+    if ci.get("run"):
+        where.append(f"run {ci['run']}")
+    if baseline.get("generated"):
+        where.append(baseline["generated"])
+    if (baseline.get("source") or {}).get("dirty"):
+        where.append("built from a dirty tree")
+    return (
+        "Change is against " + (", ".join(where) if where else "an earlier build") + "."
+    )
 
 
 def heading(text: str, level: int, markdown: bool) -> list[str]:
@@ -489,7 +666,33 @@ def main() -> None:
     parser.add_argument(
         "--out", type=Path, help="write the report here as well as to stdout"
     )
+    parser.add_argument(
+        "--json",
+        type=Path,
+        metavar="PATH",
+        help="write the measurements here for a later run to compare against",
+    )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="a --json file from an earlier build, to report the change against",
+    )
+    parser.add_argument(
+        "--metadata",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="build context to record in --json, e.g. the CI run (repeatable)",
+    )
     args = parser.parse_args()
+
+    ci = {}
+    for item in args.metadata:
+        key, separator, value = item.partition("=")
+        if not separator:
+            sys.exit(f"--metadata wants KEY=VALUE, got {item!r}")
+        if value:
+            ci[key] = value
 
     if not args.elf.is_file():
         sys.exit(f"{args.elf}: no such file -- build the firmware first")
@@ -503,13 +706,21 @@ def main() -> None:
     assign(sections, regions)
 
     image = measure_image(args.elf, args.chip, args.image) if args.chip else None
+    label = args.label or args.elf.name
+
+    current = snapshot(regions, image, label, args.elf, args.chip, ci)
+    if args.json:
+        args.json.write_text(json.dumps(current, indent=2) + "\n")
+
+    baseline = load_baseline(args.baseline, current) if args.baseline else None
 
     report = render(
         regions,
         image,
-        args.label or args.elf.name,
+        label,
         args.format == "markdown",
         args.marker,
+        baseline,
     )
     if args.out:
         args.out.write_text(report)

@@ -26,5 +26,8 @@
 .DS_Store
 Thumbs.db
 
-# Reports written by tools/fw-size.py --out
+# Reports and metadata written by tools/fw-size.py, and the baseline CI
+# downloads from main to compare against
 /size-report.md
+/size-metadata.json
+/baseline/

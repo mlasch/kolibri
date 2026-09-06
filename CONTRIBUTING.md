@@ -41,7 +41,8 @@ finds its `.cargo/config.toml`, and with it the target triple, the linker script
 and the flashing runner.
 
 Flash and RAM are finite in a way a host program's are not, so CI reports both
-per board and comments the numbers on the PR. To see them before you push:
+per board and comments the numbers on the PR, against a baseline published by
+the last build of `main`. To see them before you push:
 
 ```sh
 python3 tools/fw-size.py \

@@ -49,6 +49,8 @@ jobs:
       contents: read
       # The size report is posted as a pull request comment.
       pull-requests: write
+      # ...and compared against the baseline artifact from main.
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -105,11 +107,35 @@ jobs:
             --skip-padding \
             firmware.bin
 
+      # What this PR is measured against: the metadata from the newest main
+      # build that published one. Absent on the first run, and after the 90-day
+      # artifact retention expires -- in both cases the report simply comes out
+      # without a change column, which is why nothing here is fatal.
+      - name: Fetch the size baseline from main
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          baseline_run=$(gh run list \
+            --workflow ci.yml --branch main --event push --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "$baseline_run" ]; then
+            echo "no successful main run to compare against"
+            exit 0
+          fi
+          gh run download "$baseline_run" \
+            --name size-baseline-${{ matrix.board }} --dir baseline \
+            || echo "main run $baseline_run published no baseline"
+
       # Neither number is visible anywhere else: cargo prints nothing about
       # size, and the ELF is mostly debug info. The report is derived from the
       # ELF's own sections and the linker's memory.x, so it cannot drift.
       - name: Measure flash and RAM usage
         run: |
+          compare=()
+          if [ -f baseline/size-metadata.json ]; then
+            compare=(--baseline baseline/size-metadata.json)
+          fi
           python3 tools/fw-size.py \
             target/${{ matrix.target }}/release/kolibri \
             --chip ${{ matrix.chip }} \
@@ -117,7 +143,27 @@ jobs:
             --label ${{ matrix.board }} \
             --format markdown \
             --marker '<!-- kolibri-size-report:${{ matrix.board }} -->' \
-            --out size-report.md >> "$GITHUB_STEP_SUMMARY"
+            --out size-report.md \
+            --json size-metadata.json \
+            "${compare[@]}" \
+            --metadata repository=${{ github.repository }} \
+            --metadata ref=${{ github.ref_name }} \
+            --metadata event=${{ github.event_name }} \
+            --metadata run=${{ github.run_id }} \
+            --metadata attempt=${{ github.run_attempt }} \
+            --metadata runner=${{ runner.os }} \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # The baseline every later pull request compares itself against. It is
+      # published from main alone and under a fixed name, so a PR can find it
+      # without knowing which commit it came from.
+      - name: Publish the size baseline
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-baseline-${{ matrix.board }}
+          path: size-metadata.json
+          if-no-files-found: error
 
       # One comment per board, rewritten in place on every push rather than
       # added to, so the PR carries the sizes of the head commit and not a
@@ -152,6 +198,7 @@ jobs:
           path: |
             firmware.bin
             size-report.md
+            size-metadata.json
             target/${{ matrix.target }}/release/kolibri
           if-no-files-found: error
 

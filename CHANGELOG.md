@@ -37,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ELF and the linker's own `memory.x`. CI runs it per board, writes the report
   to the job summary and the build artifact, and posts it as a pull request
   comment that is rewritten in place on every push.
+- A `size-metadata.json` alongside that report: the measurements plus what was
+  measured (board, chip, target, profile), the commit and toolchain that
+  produced them, and the CI run that published them. Every push to `main`
+  uploads it as the `size-baseline-<board>` artifact, and each pull request
+  downloads the newest one to report the change in consumption against it.
 - `boards/README.md`: which layers Embassy makes portable and which it does not,
   and the six steps to add a board.
 
