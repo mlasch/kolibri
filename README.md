@@ -255,7 +255,7 @@ These are a **matched set** — `esp-rtos` 0.4 requires `esp-hal` ~1.2 and
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and PR:
 `cargo fmt --check`, `cargo clippy -D warnings`, a release build, and
 `cargo-deny` (advisories, licences, bans, sources). It uploads a flashable
-`firmware.bin` (bootloader + partition table + app, ~165 KB) as a build artifact:
+`firmware.bin` (bootloader + partition table + app, ~190 KB) as a build artifact:
 
 ```sh
 espflash write-bin 0x0 firmware.bin   # flash a CI artifact directly

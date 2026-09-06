@@ -32,6 +32,14 @@ jobs:
       # shared with local development. Includes its own cargo cache.
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # This action exports RUSTFLAGS=-D warnings by default, and the
+          # RUSTFLAGS environment variable *replaces* the rustflags in
+          # .cargo/config.toml rather than merging with them. That drops
+          # -Tlinkall.x and the release build fails to link with undefined
+          # _stack_start, _dram_data_start and friends. Clippy still gets
+          # -D warnings from its own step below.
+          rustflags: ""
 
       - name: Check formatting
         run: cargo fmt --all --check
