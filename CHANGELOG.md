@@ -20,5 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub Actions CI: `fmt`, `clippy -D warnings`, release build, flashable
   image artifact, and `cargo-deny`.
 - Dependabot for the `cargo` and `github-actions` ecosystems.
+- Project logo: a hummingbird silhouette (`assets/kolibri.svg`) with light and
+  dark wordmark lockups for the README.
+- `tools/gen-logo.py`, which rasterises the logo master to the 1-bpp bitmaps in
+  `src/logo.rs` so the OLED artwork and the repository logo cannot drift apart.
+- Two-second boot splash on the OLED, and a small hummingbird on the status
+  screen.
 
 [Unreleased]: https://github.com/marc/kolibri/commits/main
