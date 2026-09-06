@@ -1,55 +1,54 @@
-[package]
-name        = "kolibri"
-version     = "0.1.0"
-edition     = "2024"
+# Virtual workspace root. It deliberately declares no target, no linker flags
+# and no runner: everything MCU-specific lives in the board crate that needs it,
+# under boards/. Build a board by changing into its directory --
+#
+#     cd boards/xiao-esp32c3 && cargo run --release
+#
+# -- because Cargo discovers .cargo/config.toml by walking up from the current
+# directory, and that is what selects the target triple and the flash runner.
+[workspace]
+resolver = "3"
+members = ["kolibri-core", "boards/*"]
+# A bare `cargo build` at the root builds only the portable crate, for the host.
+# That is a feature: if kolibri-core ever picks up an MCU-specific dependency it
+# stops compiling here, which is exactly when you want to know.
+default-members = ["kolibri-core"]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2024"
 rust-version = "1.95"
-license     = "Apache-2.0"
-description = "Async (Embassy) firmware for the Seeed Studio XIAO ESP32-C3"
-repository  = "https://github.com/marc/kolibri"
-readme      = "README.md"
-keywords    = ["esp32c3", "embassy", "embedded", "xiao", "no-std"]
-categories  = ["embedded", "no-std"]
-# Board-specific firmware binary, not a library for crates.io.
-publish     = false
+license      = "Apache-2.0"
+repository   = "https://github.com/marc/kolibri"
 
-# These versions are a matched set: esp-rtos 0.4 depends on esp-hal ~1.2 and
-# embassy-sync ^0.8. Bumping one alone will fail to resolve.
-[dependencies]
-# `unstable` is required because esp_hal::timer is gated behind it.
-esp-hal = { version = "1.2.0", features = ["esp32c3", "unstable", "log-04"] }
-# esp-rtos replaces the retired esp-hal-embassy: it provides the embassy time
-# driver and the executor that #[esp_hal::main] expands into.
-esp-rtos = { version = "0.4.0", features = ["esp32c3", "embassy", "log-04"] }
-esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
-esp-println = { version = "0.18.0", features = ["esp32c3", "log-04"] }
-esp-backtrace = { version = "0.20.0", features = [
-  "esp32c3",
-  "panic-handler",
-  "println",
-] }
+# Only genuinely shared crates belong here. A board's HAL and its runtime
+# support (esp-hal, esp-rtos, embassy-stm32, ...) stay in that board's own
+# manifest, so adding a board touches nothing outside its directory.
+[workspace.dependencies]
+kolibri-core = { path = "kolibri-core" }
 
-# Do NOT enable any arch-*/platform-* feature here -- esp-rtos supplies the port
-# and enabling one alongside it breaks the build.
+# Portable Embassy layer: no arch or platform features here. Each board enables
+# whatever its own port needs (esp-rtos supplies it on Espressif; a Cortex-M
+# board turns on embassy-executor's arch-cortex-m instead).
 embassy-executor = "0.10"
-embassy-time = "0.5"
-embassy-sync = "0.8"
-embassy-futures = "0.1"
+embassy-time     = "0.5"
+embassy-sync     = "0.8"
+embassy-futures  = "0.1"
+
+# The HAL-independent halves of the driver stack.
+embedded-hal           = "1.0"
+embedded-hal-async     = "1.0"
+embedded-graphics      = "0.8"
+oled_async             = "0.2.1"
+display-interface      = "0.5"
+display-interface-i2c  = "0.5.0"
 
 log = "0.4"
 
-# SH1106 OLED on I2C. `oled_async` is the SH110x-capable descendant of the
-# `ssd1306` crate: same architecture and embedded-graphics integration, but its
-# flush re-sends the page + column address for every page. That is mandatory
-# here -- the SH1106 has no horizontal addressing mode, so the `ssd1306` crate's
-# "stream all 8 pages back-to-back" flush would rewrite page 0 eight times.
-oled_async = "0.2.1"
-# Adapts an embedded-hal-async I2c into the AsyncWriteOnlyDataCommand that
-# oled_async consumes.
-display-interface-i2c = "0.5.0"
-embedded-graphics = "0.8"
-
+# Profiles are only honoured at the workspace root; the same settings in a
+# member manifest are ignored with a warning.
 [profile.dev]
-# A fully unoptimized esp-hal build is enormous and slow to flash.
+# A fully unoptimized HAL build is enormous and slow to flash.
 opt-level = "s"
 
 [profile.release]
@@ -60,15 +59,16 @@ codegen-units = 1
 # both need it to symbolise addresses.
 debug         = 2
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code      = "warn"
 missing_docs     = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 
-[lints.clippy]
+[workspace.lints.clippy]
 all      = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# A firmware binary has no public API to document error cases for.
+# Firmware and its supporting crate have no downstream API to document error
+# cases for.
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 # Register/pin values are inherently full of small literal casts.

@@ -2,9 +2,12 @@
 # Schema: cargo-deny 0.18+ (tested against 0.20).
 
 [graph]
-# Only the target we actually ship. Without this, cargo-deny walks the
+# Only the targets we actually ship. Without this, cargo-deny walks the
 # dependency graph for every platform and reports crates we never link.
-targets = [{ triple = "riscv32imc-unknown-none-elf" }]
+# Add one entry per board under boards/.
+targets = [
+  { triple = "riscv32imc-unknown-none-elf" }, # boards/xiao-esp32c3
+]
 all-features = true
 
 [advisories]
@@ -42,6 +45,10 @@ confidence-threshold = 0.9
 multiple-versions = "warn"
 # A `*` version requirement makes builds unreproducible.
 wildcards = "deny"
+# ...except for the workspace's own path dependencies, which carry no version by
+# design. This exemption only applies to path deps of crates marked
+# `publish = false`, which both of ours are.
+allow-wildcard-paths = true
 deny = []
 
 [sources]

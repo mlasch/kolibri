@@ -17,22 +17,44 @@ cargo install probe-rs-tools --locked  # breakpoint debugging (optional)
 See the [README](README.md) for the Linux udev rules — without them flashing
 fails with a permission error.
 
+## Layout
+
+A Cargo workspace. [`kolibri-core`](kolibri-core) is the portable crate — no HAL
+may appear in its dependency tree — and each directory under
+[`boards/`](boards) is one board's firmware. [`boards/README.md`](boards/README.md)
+explains which layer a change belongs in, and how to add a board.
+
 ## Before opening a PR
 
 ```sh
 cargo fmt --all --check
+cargo clippy -p kolibri-core --all-features -- -D warnings   # host target
+
+cd boards/xiao-esp32c3
 cargo clippy --all-features -- -D warnings
 cargo build --release
 cargo run --release          # on hardware
 ```
 
-CI runs the first three plus `cargo deny`. Warnings are errors, so please don't
+Board commands have to run from inside the board directory: that is how Cargo
+finds its `.cargo/config.toml`, and with it the target triple, the linker script
+and the flashing runner.
+
+CI runs all of the above plus `cargo deny`. Warnings are errors, so please don't
 `#[allow]` your way past a lint without a comment explaining why.
 
 ## Conventions
 
-- **Lints live in `Cargo.toml`**, under `[lints]`, not as crate-level attributes
-  in `main.rs`. That way rust-analyzer and CI read exactly the same config.
+- **Keep the core portable.** Nothing in `kolibri-core` may depend on a HAL:
+  write against `embedded-hal-async`, `embedded-graphics` and the crate's own
+  `temperature::Source` / `display::Panel` traits. CI builds it for the host, so
+  a stray `esp-hal` fails the build rather than the review.
+- **Board crates hold pins, not policy.** Pin numbers, bus addresses and clock
+  rates belong in the board crate; periods and layout belong in `kolibri-core`
+  so every board agrees on them.
+- **Lints live in the workspace `Cargo.toml`**, under `[workspace.lints]`, not as
+  crate-level attributes in `main.rs`. That way rust-analyzer and CI read exactly
+  the same config, and every crate is held to it.
 - **Don't block in async code.** No `Delay::delay_ms`, no busy-wait loops inside
   a task — they stall the whole executor. Use `embassy_time::Timer` or `Ticker`.
 - **Prefer ownership over sharing.** Hand a peripheral to the task that uses it
@@ -40,9 +62,10 @@ CI runs the first three plus `cargo deny`. Warnings are errors, so please don't
   `embassy_sync` only when two tasks genuinely need the same resource.
 - **Use `Ticker` for periodic work**, not `Timer::after` in a loop — the latter
   drifts by however long each iteration takes.
-- **Pin versions deliberately.** The esp-rs crates are a matched set
-  (`esp-rtos` 0.4 requires `esp-hal` ~1.2). Bumping one alone will not resolve.
-  Let Dependabot propose bumps and review them as a group.
+- **Pin versions deliberately.** Shared crates go in `[workspace.dependencies]`;
+  a board's HAL stays in that board's manifest. The esp-rs crates are a matched
+  set (`esp-rtos` 0.4 requires `esp-hal` ~1.2), so bumping one alone will not
+  resolve. Let Dependabot propose bumps and review them as a group.
 
 ## Commit messages
 

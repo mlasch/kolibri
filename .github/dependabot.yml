@@ -3,6 +3,10 @@ updates:
   # The esp-rs crates move fast and change APIs between minor versions
   # (esp-hal-embassy was removed outright in favour of esp-rtos). Surfacing
   # bumps as reviewable PRs is much safer than discovering them mid-feature.
+  #
+  # `/` is the workspace root, which is enough: Dependabot follows the workspace
+  # members, so kolibri-core and every board under boards/ are covered by this
+  # one entry.
   - package-ecosystem: cargo
     directory: /
     schedule:

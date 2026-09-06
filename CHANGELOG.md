@@ -29,14 +29,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Chip temperature on the OLED, read from the ESP32-C3's on-chip `tsens`
   sensor and published to the display through an `embassy_sync::watch::Watch`.
   The reading is die temperature, not ambient, and is labelled `chip` to say so.
-- `TemperatureSource` trait and a `Source` type alias, so swapping the on-chip
-  sensor for an external I²C part is one impl and one line.
+- `temperature::Source` trait and a per-board `Sensor` type alias, so swapping
+  the on-chip sensor for an external I²C part is one impl and one line.
 - `tools/gen-oled-preview.py`, which regenerates the README's OLED preview from
   the real fonts, bitmaps and layout coordinates.
+- `boards/README.md`: which layers Embassy makes portable and which it does not,
+  and the six steps to add a board.
 
 ### Changed
 
 - The status screen shows the temperature where it used to show the blink rate.
   The LED still blinks and the rate is still logged.
+- **Split into a Cargo workspace so the project can support more than one MCU.**
+  `kolibri-core` holds the four task loops, the screen layout and the sensor
+  abstraction, written against `embedded-hal-async`, `embedded-graphics` and two
+  traits of its own (`temperature::Source`, `display::Panel`) rather than
+  against a HAL. `boards/xiao-esp32c3` holds esp-hal, the entry point, the pin
+  map, the on-chip `tsens` sensor, the target triple and the flashing runner.
+  Build a board from inside its directory; a bare `cargo build` at the root
+  builds only the portable crate, for the host, which is what keeps it portable.
+  The flashed image is unchanged in behaviour and size — the generic loops
+  monomorphise to the same code.
+- `src/logo.rs` moved to `kolibri-core/src/logo.rs`, and `.cargo/config.toml` to
+  `boards/xiao-esp32c3/.cargo/config.toml`. `tools/gen-logo.py` and
+  `tools/gen-oled-preview.py` follow the new paths and still run from the
+  repository root.
+- Timing constants moved into `kolibri-core` as `blink::PERIOD`,
+  `blink::PERIOD_FAST`, `heartbeat::PERIOD`, `display::PERIOD`,
+  `display::SPLASH_PERIOD` and `temperature::PERIOD`; pins, bus addresses and
+  clock rates stay in the board crate.
+- CI gained a `portable core` job that lints `kolibri-core` for the host target,
+  and the board build became a matrix with one entry per directory under
+  `boards/`.
 
 [Unreleased]: https://github.com/marc/kolibri/commits/main
