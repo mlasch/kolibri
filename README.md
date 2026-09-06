@@ -13,8 +13,9 @@ draws on the OLED.
 [![CI](https://github.com/marc/kolibri/actions/workflows/ci.yml/badge.svg)](https://github.com/marc/kolibri/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#licence)
 
-The example firmware runs two concurrent Embassy tasks: one blinking an LED on
-`D10`, one logging a heartbeat and retuning the blink rate through an
+The example firmware runs four concurrent Embassy tasks: one sampling the
+chip's temperature sensor, one drawing that to the OLED, one blinking an LED on
+`D10`, and one logging a heartbeat and retuning the blink rate through an
 `embassy_sync::Signal`.
 
 ---
@@ -61,7 +62,17 @@ On boot the firmware puts up a two-second splash and then switches to the
 status screen. Both are rendered here pixel-for-pixel as the firmware draws
 them, from the same font and the same bitmaps:
 
-![Two 128x64 OLED screens: the boot splash with the hummingbird logo beside the words kolibri and esp32-c3, and the status screen with a smaller hummingbird beside the uptime and blink rate](assets/oled-preview.png)
+![Two 128x64 OLED screens: the boot splash with the hummingbird logo beside the words kolibri and esp32-c3, and the status screen showing 41.7 degrees Celsius in a large font with a smaller hummingbird beside it](assets/oled-preview.png)
+
+That image is generated too, by
+[`tools/gen-oled-preview.py`](tools/gen-oled-preview.py), from
+embedded-graphics' own font sheets and the bitmaps in
+[`src/logo.rs`](src/logo.rs) at the coordinates `src/main.rs` actually uses — so
+it cannot quietly drift away from what the panel shows:
+
+```sh
+python3 tools/gen-oled-preview.py   # needs Pillow; rerun after changing the layout
+```
 
 The bird is the repository logo, rasterised from the same vector master. A
 two-colour panel has no grey to model shape with, so the artwork is a
@@ -142,7 +153,9 @@ cargo run --release        # flash over USB-C and open the serial monitor
 
 ```
 INFO - kolibri starting on XIAO ESP32-C3
+INFO - display ready on 0x3c
 INFO - led on
+INFO - chip temperature 41.7 C
 INFO - led off
 ...
 INFO - heartbeat (uptime 5 s)
@@ -215,11 +228,31 @@ VS Code terminal. Use `log::{trace,debug,info,warn,error}!` as usual.
 | [`src/logo.rs`](src/logo.rs) | Generated 1-bpp hummingbird bitmaps for the OLED |
 | [`assets/`](assets/) | Logo master, wordmarks, and the OLED preview |
 | [`tools/gen-logo.py`](tools/gen-logo.py) | Regenerates `src/logo.rs` from the logo master |
+| [`tools/gen-oled-preview.py`](tools/gen-oled-preview.py) | Regenerates the README's OLED preview from the real layout |
 | [`.cargo/config.toml`](.cargo/config.toml) | Target, linker flags, `cargo run` runner |
 | [`rust-toolchain.toml`](rust-toolchain.toml) | Pinned toolchain + RISC-V target |
 | [`deny.toml`](deny.toml) | Dependency licence / advisory policy |
 | [`.vscode/`](.vscode/) | Settings, tasks, extensions, debug configs |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | fmt, clippy, build, image, cargo-deny |
+
+### Changing the temperature source
+
+The reading comes from the ESP32-C3's on-chip sensor, through esp-hal's
+`tsens` driver. **It measures the die, not the room.** Espressif's own
+documentation notes that the internal temperature runs above ambient, and how
+far above depends on clock speed, I/O load and especially radio activity —
+10–20 °C over the room is normal on an idle board. esp-hal 1.2 also leaves the
+calibration offset hardcoded, so treat the absolute number as indicative and
+the *changes* as the meaningful part. That is why the screen labels it `chip`
+rather than claiming to be a thermometer.
+
+For actual ambient temperature, hang an I²C sensor off the same `D4`/`D5` bus —
+an SHT4x (`0x44`), a BME280 (`0x76`/`0x77`) or an AHT20 (`0x38`); none of them
+collide with the panel at `0x3C`. The firmware is arranged so that this is a
+small change: implement `TemperatureSource` for the new part and point the
+`Source` type alias at it. Note that sharing the bus with the display means
+wrapping the `I2c` in an `embassy_sync::mutex::Mutex` and handing each task an
+`I2cDevice`.
 
 ### Changing the LED pin or blink rate
 
