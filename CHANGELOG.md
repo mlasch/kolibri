@@ -52,6 +52,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Wi-Fi credentials will replace it.
 - Host unit tests for that format, run by CI, against a mock flash that models
   erase-to-ones and write-only-clears-bits.
+- `tools/mk-settings.py`, which builds that record on the host so a board can be
+  flashed already provisioned (`--boot-count`, `--text`, `--hex`, `--file`), and
+  decodes a region read back off a device with `--inspect`. It parses the format
+  constants out of `storage.rs` instead of restating them, and one of the unit
+  tests provisions an image with it and loads it through the real `Store`, so
+  the Python and the Rust cannot drift apart unnoticed.
 - `boards/README.md`: which layers Embassy makes portable and which it does not,
   and the six steps to add a board.
 
