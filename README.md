@@ -1,8 +1,14 @@
-# kolibri
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/kolibri-wordmark-dark.svg">
+  <img src="assets/kolibri-wordmark.svg" alt="kolibri" width="260">
+</picture>
 
 Async firmware boilerplate for the **Seeed Studio XIAO ESP32-C3**, built on
 [esp-hal](https://github.com/esp-rs/esp-hal) and [Embassy](https://embassy.dev).
 Builds on **stable Rust** — no nightly, no `-Z build-std`, no Xtensa toolchain.
+
+*Kolibri* is German for hummingbird — hence the bird, which the firmware also
+draws on the OLED.
 
 [![CI](https://github.com/marc/kolibri/actions/workflows/ci.yml/badge.svg)](https://github.com/marc/kolibri/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](#licence)
@@ -50,6 +56,32 @@ into the wrong boot mode.
 An SH1106 128x64 I²C module wires to `D4` (SDA), `D5` (SCL), `3V3` and `GND`.
 Use the module's own pull-ups — the C3's internal ones are ~45 kΩ, too weak for
 the 400 kHz the firmware configures. The default address is `0x3C`.
+
+On boot the firmware puts up a two-second splash and then switches to the
+status screen. Both are rendered here pixel-for-pixel as the firmware draws
+them, from the same font and the same bitmaps:
+
+![Two 128x64 OLED screens: the boot splash with the hummingbird logo beside the words kolibri and esp32-c3, and the status screen with a smaller hummingbird beside the uptime and blink rate](assets/oled-preview.png)
+
+The bird is the repository logo, rasterised from the same vector master. A
+two-colour panel has no grey to model shape with, so the artwork is a
+silhouette and the outline has to carry the whole bird.
+[`tools/gen-logo.py`](tools/gen-logo.py) renders
+[`assets/kolibri.svg`](assets/kolibri.svg) at the two sizes the firmware draws
+and writes [`src/logo.rs`](src/logo.rs):
+
+```sh
+python3 tools/gen-logo.py   # needs Inkscape and Pillow; rerun after editing the SVG
+```
+
+The packing is what `embedded_graphics::image::ImageRaw` expects — one bit per
+pixel, rows padded to whole bytes, most significant bit leftmost. A set bit is
+a *lit* pixel, so the bird glows against the panel's own black rather than
+being punched out of a lit rectangle. Both widths are multiples of eight, so
+every row is a whole number of bytes and the generated lines correspond one to
+one with display rows. The 40x30 glyph is thresholded fatter than the 64x48
+one: at that size the beak is a single pixel wide and a neutral threshold drops
+it.
 
 The driver is [`oled_async`](https://crates.io/crates/oled_async), not the more
 familiar `ssd1306` crate. The SH1106 has **no horizontal addressing mode**: its
@@ -180,6 +212,9 @@ VS Code terminal. Use `log::{trace,debug,info,warn,error}!` as usual.
 | Path | What it is |
 |---|---|
 | [`src/main.rs`](src/main.rs) | Entry point, tasks, and the board constants |
+| [`src/logo.rs`](src/logo.rs) | Generated 1-bpp hummingbird bitmaps for the OLED |
+| [`assets/`](assets/) | Logo master, wordmarks, and the OLED preview |
+| [`tools/gen-logo.py`](tools/gen-logo.py) | Regenerates `src/logo.rs` from the logo master |
 | [`.cargo/config.toml`](.cargo/config.toml) | Target, linker flags, `cargo run` runner |
 | [`rust-toolchain.toml`](rust-toolchain.toml) | Pinned toolchain + RISC-V target |
 | [`deny.toml`](deny.toml) | Dependency licence / advisory policy |

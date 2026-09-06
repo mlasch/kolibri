@@ -20,8 +20,9 @@ use display_interface_i2c::I2CInterface;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Ticker, Timer};
 use embedded_graphics::{
+    image::Image,
     mono_font::{MonoTextStyle, ascii::FONT_6X10},
     pixelcolor::BinaryColor,
     prelude::*,
@@ -37,6 +38,8 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use oled_async::{Builder, displays::sh1106::Sh1106_128_64, mode::GraphicsMode};
+
+mod logo;
 
 // Emits the esp-idf application descriptor the second-stage bootloader expects.
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -58,6 +61,9 @@ const HEARTBEAT_PERIOD: Duration = Duration::from_secs(5);
 /// How often the OLED is redrawn. Every redraw pushes the whole 1 KiB frame
 /// over I2C, so this is the main cost of having a display attached.
 const DISPLAY_PERIOD: Duration = Duration::from_secs(1);
+
+/// How long the boot splash stays up before the status screen replaces it.
+const SPLASH_PERIOD: Duration = Duration::from_secs(2);
 
 /// I2C address of the SH1106 module. Almost all of them are `0x3C`; boards with
 /// the SA0 jumper bridged answer on `0x3D` instead.
@@ -208,6 +214,47 @@ async fn heartbeat() {
     }
 }
 
+/// Draws the boot splash -- the hummingbird the project is named after -- and
+/// leaves it up for [`SPLASH_PERIOD`].
+///
+/// The bitmap is 1 bit per pixel with a set bit meaning a *lit* pixel, so the
+/// bird glows against the panel's own black rather than being punched out of a
+/// lit rectangle. That is the whole reason the artwork is a silhouette: on a
+/// two-colour panel there is no grey to model shape with, so the outline has to
+/// carry it. See [`logo`], generated from `assets/kolibri.svg` by
+/// `tools/gen-logo.py`.
+async fn splash(display: &mut Display) {
+    let text = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+
+    display.clear();
+
+    let drawn = Image::new(&logo::LARGE, Point::new(4, 8))
+        .draw(display)
+        .and_then(|()| {
+            Text::with_baseline("kolibri", Point::new(76, 20), text, Baseline::Top)
+                .draw(display)
+                .map(|_| ())
+        })
+        .and_then(|()| {
+            Text::with_baseline("esp32-c3", Point::new(76, 34), text, Baseline::Top)
+                .draw(display)
+                .map(|_| ())
+        });
+
+    if let Err(e) = drawn {
+        log::warn!("splash draw failed: {e:?}");
+        return;
+    }
+    if let Err(e) = display.flush().await {
+        log::warn!("splash flush failed: {e:?}");
+        return;
+    }
+
+    // A `Timer`, not a blocking delay: `blink` and `heartbeat` keep running for
+    // the two seconds the splash is up.
+    Timer::after(SPLASH_PERIOD).await;
+}
+
 /// Renders status to the OLED once per second.
 ///
 /// Redrawing is a two-stage affair: `embedded-graphics` calls mutate an
@@ -225,6 +272,8 @@ async fn display(mut display: Display) {
         return;
     }
     log::info!("display ready on 0x{DISPLAY_ADDRESS:02x}");
+
+    splash(&mut display).await;
 
     let mut period = BLINK_PERIOD;
     let mut ticker = Ticker::every(DISPLAY_PERIOD);
@@ -250,6 +299,9 @@ async fn display(mut display: Display) {
         let drawn = Rectangle::new(Point::zero(), Size::new(128, 64))
             .into_styled(border)
             .draw(&mut display)
+            // Top right, clear of the widest line the text below can grow to
+            // ("blink 500 ms" ends at x = 78).
+            .and_then(|()| Image::new(&logo::SMALL, Point::new(84, 6)).draw(&mut display))
             .and_then(|()| {
                 Text::with_baseline("kolibri", Point::new(6, 6), text, Baseline::Top)
                     .draw(&mut display)
