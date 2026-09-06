@@ -257,6 +257,7 @@ A Cargo workspace: one portable crate, one crate per board.
 | [`kolibri-core/src/temperature.rs`](kolibri-core/src/temperature.rs) | `Celsius`, the `Source` trait, and the sampling loop |
 | [`kolibri-core/src/display.rs`](kolibri-core/src/display.rs) | The `Panel` trait, the SH1106 helper, and the screen |
 | [`kolibri-core/src/logo.rs`](kolibri-core/src/logo.rs) | Generated 1-bpp hummingbird bitmaps for the OLED |
+| [`kolibri-core/src/storage.rs`](kolibri-core/src/storage.rs) | One small record kept in NOR flash across a power cycle |
 | [`boards/README.md`](boards/README.md) | **How to add a board, and what porting actually costs** |
 | [`boards/xiao-esp32c3/src/main.rs`](boards/xiao-esp32c3/src/main.rs) | Entry point, pin map, on-chip sensor, task declarations |
 | [`boards/xiao-esp32c3/.cargo/config.toml`](boards/xiao-esp32c3/.cargo/config.toml) | Target, linker flags, `cargo run` runner |
@@ -311,6 +312,47 @@ at the top of
 in `kolibri-core`: `blink::PERIOD` and `blink::PERIOD_FAST`,
 `heartbeat::PERIOD`, `display::PERIOD` and `display::SPLASH_PERIOD`, and
 `temperature::PERIOD`.
+
+### Storing settings in flash
+
+`kolibri_core::storage` keeps one small record — a few hundred bytes at most —
+somewhere it survives a reset, a power cut and a reflash. It exists for the
+Wi-Fi credentials that come next; today it holds a boot counter, which is the
+smallest payload that proves the whole path works on real hardware:
+
+```text
+INFO - kolibri starting on XIAO ESP32-C3
+INFO - boot #7
+```
+
+NOR flash cannot be updated in place, so erasing the only copy and losing power
+mid-write would lose the data. The store therefore keeps **two slots**, one
+erase block each, and alternates: a save erases the older slot, writes the
+payload, then writes the header — magic, format version, length, sequence
+number and CRC-32 — last. Until that header is on flash the slot does not
+count, so an interrupted save leaves the previous record exactly as it was, and
+a load takes the valid slot with the higher sequence number.
+
+It is deliberately not a filesystem or a key-value store: one record, rewritten
+whole. For independently updatable keys or wear levelling across a large
+partition, `sequential-storage` is the crate to reach for.
+
+The record lives in the **`nvs` partition** (`0x9000`, 24 KiB) that espflash
+puts in its default partition table. The bytes there are kolibri's format, not
+ESP-IDF's NVS format — nothing in a `no_std` build reads ESP-IDF's. `espflash
+flash` rewrites only the bootloader, the partition table and the app, so the
+record survives a reflash. To wipe it:
+
+```sh
+espflash erase-region 0x9000 0x6000
+```
+
+Because it is written against `embedded_storage::nor_flash::NorFlash` rather
+than against esp-storage, the same module works on any board that can hand over
+an erasable region, and its format is unit-tested on the host — see the tests at
+the bottom of [`kolibri-core/src/storage.rs`](kolibri-core/src/storage.rs),
+which run in CI against a mock flash that models erase-to-ones and
+write-only-clears-bits.
 
 ---
 

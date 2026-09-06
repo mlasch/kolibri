@@ -658,6 +658,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba0e487f6843419bb085d871f6e860da1bb8c267ce1c5db1051b83882e943054"
 dependencies = [
  "document-features",
+ "embedded-storage",
  "esp-config",
  "esp-hal-procmacros",
  "esp-metadata-generated",
@@ -1182,6 +1183,7 @@ dependencies = [
  "embedded-graphics",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
+ "embedded-storage",
  "log",
  "oled_async",
 ]
@@ -1197,6 +1199,7 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-rtos",
+ "esp-storage",
  "kolibri-core",
  "log",
 ]

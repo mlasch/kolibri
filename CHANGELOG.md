@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced them, and the CI run that published them. Every push to `main`
   uploads it as the `size-baseline-<board>` artifact, and each pull request
   downloads the newest one to report the change in consumption against it.
+- `kolibri_core::storage`: one small record kept across a power cycle, written
+  against `embedded-storage`'s NOR-flash traits so it is not tied to a chip. Two
+  slots of one erase block each are alternated, and the header — magic, format
+  version, length, sequence number, CRC-32 — is written last, so an interrupted
+  save leaves the previous record intact. The XIAO ESP32-C3 firmware points it
+  at the `nvs` partition and counts boots in it, which is the smallest payload
+  that exercises partition lookup, checksum and slot alternation on hardware;
+  Wi-Fi credentials will replace it.
+- Host unit tests for that format, run by CI, against a mock flash that models
+  erase-to-ones and write-only-clears-bits.
 - `boards/README.md`: which layers Embassy makes portable and which it does not,
   and the six steps to add a board.
 
