@@ -29,6 +29,9 @@ embedded-hal       = { workspace = true }
 embedded-hal-async = { workspace = true }
 
 embedded-graphics = { workspace = true }
+# Only the traits again: the board hands over an erasable region -- a flash
+# partition, an external SPI chip -- and `storage` does not care which.
+embedded-storage = { workspace = true }
 # SH1106 OLED support. `oled_async` is the SH110x-capable descendant of the
 # `ssd1306` crate: same architecture and embedded-graphics integration, but its
 # flush re-sends the page + column address for every page. That is mandatory

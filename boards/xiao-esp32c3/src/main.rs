@@ -25,17 +25,23 @@
 use embassy_executor::Spawner;
 use embassy_time::Duration;
 use esp_backtrace as _;
+use esp_bootloader_esp_idf::partitions::{
+    self, DataPartitionSubType, FlashStorage, PARTITION_TABLE_MAX_LEN, PartitionType,
+};
 use esp_hal::{
     Async,
     gpio::{Level, Output, OutputConfig},
     i2c::master::{Config as I2cConfig, I2c},
-    peripherals::TSENS,
+    peripherals::{FLASH, TSENS},
     time::Rate,
     timer::timg::TimerGroup,
     tsens::{Config as TsensConfig, ConfigError, TemperatureSensor},
 };
+// Linked for its `critical-section` feature, not called directly; see Cargo.toml.
+use esp_storage as _;
 use kolibri_core::{
     display::{Labels, Sh1106I2c},
+    storage::Store,
     temperature::{Celsius, Source},
 };
 
@@ -129,6 +135,90 @@ impl Source for InternalSensor {
 }
 
 // ---------------------------------------------------------------------------
+// Persistent settings
+// ---------------------------------------------------------------------------
+
+/// How many bytes of the stored record the firmware may use.
+///
+/// Sized for what goes in it next: an SSID is at most 32 bytes and a WPA2
+/// passphrase at most 63, so this leaves room for the framing around them while
+/// staying far inside the 4 KiB erase block one slot occupies.
+const SETTINGS_CAPACITY: usize = 128;
+
+/// Counts this boot and returns the new total, or `None` if the record could
+/// not be read or written.
+///
+/// A boot counter is not useful in itself. It is here because it is the
+/// smallest payload that exercises the whole path -- partition lookup, CRC,
+/// slot alternation -- on the real chip, so the storage is verifiable from the
+/// serial log alone before anything depends on it. Wi-Fi credentials take its
+/// place.
+///
+/// The record lives in the `nvs` partition, which espflash puts in the default
+/// partition table and which nothing else in a `no_std` build touches. What is
+/// written there is [`kolibri_core::storage`]'s format, not ESP-IDF's NVS
+/// format; the two never meet, because there is no ESP-IDF here to read it.
+/// `espflash flash` rewrites only the bootloader, the partition table and the
+/// app, so the record survives a reflash -- erase it with `espflash
+/// erase-region 0x9000 0x6000`.
+fn count_boot(flash: FLASH<'static>) -> Option<u32> {
+    let mut flash = FlashStorage::new(flash);
+
+    // 3 KiB, and alive only until the entry below has been copied out of it.
+    let mut raw = [0u8; PARTITION_TABLE_MAX_LEN];
+    let table = match partitions::read_partition_table(&mut flash, &mut raw) {
+        Ok(table) => table,
+        Err(error) => {
+            log::warn!("no partition table: {error:?}");
+            return None;
+        }
+    };
+    let entry = match table.find_partition(PartitionType::Data(DataPartitionSubType::Nvs)) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => {
+            log::warn!("no nvs partition to store settings in");
+            return None;
+        }
+        Err(error) => {
+            log::warn!("partition table unreadable: {error:?}");
+            return None;
+        }
+    };
+
+    let mut region = entry.as_flash_region(&mut flash);
+    let nor = region.as_nor_flash().ok()?;
+    let mut store = match Store::<_, SETTINGS_CAPACITY>::new(nor) {
+        Ok(store) => store,
+        Err(error) => {
+            log::warn!("nvs partition cannot hold the settings record: {error:?}");
+            return None;
+        }
+    };
+
+    let mut settings = [0u8; SETTINGS_CAPACITY];
+    let previous = match store.load(&mut settings) {
+        Ok(Some(len)) if len >= 4 => {
+            u32::from_le_bytes([settings[0], settings[1], settings[2], settings[3]])
+        }
+        // Nothing stored yet, or a record from before this counter existed.
+        Ok(_) => 0,
+        Err(error) => {
+            log::warn!("settings unreadable: {error:?}");
+            return None;
+        }
+    };
+
+    let boots = previous.wrapping_add(1);
+    match store.save(&boots.to_le_bytes()) {
+        Ok(()) => Some(boots),
+        Err(error) => {
+            log::warn!("settings not written: {error:?}");
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tasks
 //
 // One line each: `#[embassy_executor::task]` needs a concrete type to size the
@@ -187,6 +277,14 @@ async fn main(spawner: Spawner) {
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
     log::info!("kolibri starting on XIAO ESP32-C3");
+
+    // Before anything else claims the flash: proof that the settings record
+    // round-trips. The number goes up by one on every reset and survives a
+    // reflash.
+    match count_boot(peripherals.FLASH) {
+        Some(boots) => log::info!("boot #{boots}"),
+        None => log::warn!("settings storage unavailable; boot not counted"),
+    }
 
     // D10 on the XIAO silkscreen. Starts low, so a fresh boot begins with the
     // LED off.

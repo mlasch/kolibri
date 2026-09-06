@@ -42,6 +42,13 @@ jobs:
       - name: Clippy (host target)
         run: cargo clippy -p kolibri-core --all-features -- -D warnings
 
+      # The portable crate is the only one that can be tested at all: a board
+      # binary is `no_std` and has no test harness to link against. Formats that
+      # outlive a power cycle -- see kolibri-core/src/storage.rs -- are exactly
+      # what wants a test rather than a flash-and-squint.
+      - name: Test (host target)
+        run: cargo test -p kolibri-core --all-features
+
   board:
     name: ${{ matrix.board }}
     runs-on: ubuntu-latest
