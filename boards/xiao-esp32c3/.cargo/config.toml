@@ -1,3 +1,7 @@
+# Board-local Cargo config. Cargo discovers this by walking up from the current
+# directory, so it applies when you build from inside boards/xiao-esp32c3 and
+# nowhere else -- which is what keeps the target triple, the ESP-specific linker
+# script and the flashing runner out of the other boards' way.
 [build]
 target = "riscv32imc-unknown-none-elf"
 

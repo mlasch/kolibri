@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate `src/logo.rs` from `assets/kolibri.svg`.
+"""Regenerate `kolibri-core/src/logo.rs` from `assets/kolibri.svg`.
 
 The OLED asset and the repository logo are the same artwork: this script
 rasterises the vector master at the two sizes the firmware draws and packs the
@@ -22,7 +22,7 @@ from pathlib import Path
 from PIL import Image
 
 SVG = Path("assets/kolibri.svg")
-OUT = Path("src/logo.rs")
+OUT = Path("kolibri-core/src/logo.rs")
 
 # (rust_const, width, height, ink_threshold, where it is used)
 #

@@ -1,0 +1,54 @@
+[package]
+name        = "kolibri-xiao-esp32c3"
+description = "kolibri firmware for the Seeed Studio XIAO ESP32-C3"
+keywords    = ["esp32c3", "embassy", "embedded", "xiao", "no-std"]
+categories  = ["embedded", "no-std"]
+readme      = "../../README.md"
+# Board-specific firmware binary, not a library for crates.io.
+publish     = false
+
+version      .workspace = true
+edition      .workspace = true
+rust-version .workspace = true
+license      .workspace = true
+repository   .workspace = true
+
+# The artifact keeps the project's name so espflash, probe-rs and
+# .vscode/launch.json all point at target/<triple>/<profile>/kolibri.
+[[bin]]
+name = "kolibri"
+path = "src/main.rs"
+
+[dependencies]
+kolibri-core = { workspace = true }
+
+# --- Chip-specific: everything below exists only for this board -------------
+# These versions are a matched set: esp-rtos 0.4 depends on esp-hal ~1.2 and
+# embassy-sync ^0.8. Bumping one alone will fail to resolve. They are pinned
+# here rather than in the workspace manifest so that adding a board for another
+# vendor touches nothing outside its own directory.
+#
+# `unstable` is required because esp_hal::timer is gated behind it.
+esp-hal = { version = "1.2.0", features = ["esp32c3", "unstable", "log-04"] }
+# esp-rtos replaces the retired esp-hal-embassy: it provides the embassy time
+# driver and the executor that #[esp_hal::main] expands into.
+esp-rtos = { version = "0.4.0", features = ["esp32c3", "embassy", "log-04"] }
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c3"] }
+esp-println = { version = "0.18.0", features = ["esp32c3", "log-04"] }
+esp-backtrace = { version = "0.20.0", features = [
+  "esp32c3",
+  "panic-handler",
+  "println",
+] }
+
+# Do NOT enable any arch-*/platform-* feature on embassy-executor here --
+# esp-rtos supplies the port and enabling one alongside it breaks the build.
+# That advice is specific to Espressif: a Cortex-M board needs arch-cortex-m
+# and executor-thread instead.
+embassy-executor = { workspace = true }
+embassy-time     = { workspace = true }
+
+log = { workspace = true }
+
+[lints]
+workspace = true

@@ -7,6 +7,10 @@ Async firmware boilerplate for the **Seeed Studio XIAO ESP32-C3**, built on
 [esp-hal](https://github.com/esp-rs/esp-hal) and [Embassy](https://embassy.dev).
 Builds on **stable Rust** — no nightly, no `-Z build-std`, no Xtensa toolchain.
 
+The application lives in a HAL-independent crate and the chip-specific parts in
+a board crate, so moving to another MCU is a port of the board crate rather than
+a rewrite — see [`boards/README.md`](boards/README.md).
+
 *Kolibri* is German for hummingbird — hence the bird, which the firmware also
 draws on the OLED.
 
@@ -17,6 +21,11 @@ The example firmware runs four concurrent Embassy tasks: one sampling the
 chip's temperature sensor, one drawing that to the OLED, one blinking an LED on
 `D10`, and one logging a heartbeat and retuning the blink rate through an
 `embassy_sync::Signal`.
+
+```
+kolibri-core/          portable: the four task loops, the screen, the sensor trait
+boards/xiao-esp32c3/   chip-specific: esp-hal, entry point, pins, tsens, runner
+```
 
 ---
 
@@ -67,7 +76,8 @@ them, from the same font and the same bitmaps:
 That image is generated too, by
 [`tools/gen-oled-preview.py`](tools/gen-oled-preview.py), from
 embedded-graphics' own font sheets and the bitmaps in
-[`src/logo.rs`](src/logo.rs) at the coordinates `src/main.rs` actually uses — so
+[`kolibri-core/src/logo.rs`](kolibri-core/src/logo.rs) at the coordinates
+[`kolibri-core/src/display.rs`](kolibri-core/src/display.rs) actually uses — so
 it cannot quietly drift away from what the panel shows:
 
 ```sh
@@ -79,7 +89,7 @@ two-colour panel has no grey to model shape with, so the artwork is a
 silhouette and the outline has to carry the whole bird.
 [`tools/gen-logo.py`](tools/gen-logo.py) renders
 [`assets/kolibri.svg`](assets/kolibri.svg) at the two sizes the firmware draws
-and writes [`src/logo.rs`](src/logo.rs):
+and writes [`kolibri-core/src/logo.rs`](kolibri-core/src/logo.rs):
 
 ```sh
 python3 tools/gen-logo.py   # needs Inkscape and Pillow; rerun after editing the SVG
@@ -141,21 +151,35 @@ Verify the board is seen: `lsusb | grep 303a` should show
 
 ## Build, flash, run
 
+Build from **inside the board directory** — that is how Cargo picks up
+[`boards/xiao-esp32c3/.cargo/config.toml`](boards/xiao-esp32c3/.cargo/config.toml),
+and with it the target triple, the linker script and the flashing runner:
+
 ```sh
+cd boards/xiao-esp32c3
+
 cargo build                # debug
 cargo build --release      # optimised (opt-level = "s", fat LTO)
 
 cargo run --release        # flash over USB-C and open the serial monitor
 ```
 
-`cargo run` works because [`.cargo/config.toml`](.cargo/config.toml) sets
+At the repository root, a bare `cargo build` builds only `kolibri-core`, for the
+host — the standing check that the portable crate is still portable.
+
+Build output goes to `target/` at the repository root either way: workspace
+members share one target directory, and the board's binary is named `kolibri`
+whatever the board.
+
+`cargo run` works because the board's config sets
 `runner = "espflash flash --monitor"`. Expected output:
 
 ```
 INFO - kolibri starting on XIAO ESP32-C3
-INFO - display ready on 0x3c
-INFO - led on
+INFO - display on 0x3c
+INFO - display ready
 INFO - chip temperature 41.7 C
+INFO - led on
 INFO - led off
 ...
 INFO - heartbeat (uptime 5 s)
@@ -163,7 +187,7 @@ INFO - blink period -> 100 ms
 ```
 
 Change the log level per invocation: `ESP_LOG=debug cargo run --release`
-(the default, `info`, is baked in via `.cargo/config.toml`).
+(the default, `info`, is baked in via the board's `.cargo/config.toml`).
 
 ### If flashing fails to start
 
@@ -209,8 +233,8 @@ since debug sections are not loaded onto the device.
 `esp-backtrace` prints a panic message and a stack trace over the same serial
 link. `espflash monitor` resolves the addresses against the ELF automatically,
 so a panic looks like real function names rather than raw hex. The
-`-C force-frame-pointers` flag in `.cargo/config.toml` is what makes that
-unwinding possible — don't remove it.
+`-C force-frame-pointers` flag in the board's `.cargo/config.toml` is what makes
+that unwinding possible — don't remove it.
 
 ### Logging
 
@@ -222,18 +246,36 @@ VS Code terminal. Use `log::{trace,debug,info,warn,error}!` as usual.
 
 ## Project layout
 
+A Cargo workspace: one portable crate, one crate per board.
+
 | Path | What it is |
 |---|---|
-| [`src/main.rs`](src/main.rs) | Entry point, tasks, and the board constants |
-| [`src/logo.rs`](src/logo.rs) | Generated 1-bpp hummingbird bitmaps for the OLED |
+| [`Cargo.toml`](Cargo.toml) | Workspace root — shared dependency versions, profiles, lints |
+| [`kolibri-core/src/lib.rs`](kolibri-core/src/lib.rs) | The portable crate: what a board has to provide |
+| [`kolibri-core/src/blink.rs`](kolibri-core/src/blink.rs) | LED loop, generic over `StatefulOutputPin` |
+| [`kolibri-core/src/heartbeat.rs`](kolibri-core/src/heartbeat.rs) | Liveness log, retunes the blink rate |
+| [`kolibri-core/src/temperature.rs`](kolibri-core/src/temperature.rs) | `Celsius`, the `Source` trait, and the sampling loop |
+| [`kolibri-core/src/display.rs`](kolibri-core/src/display.rs) | The `Panel` trait, the SH1106 helper, and the screen |
+| [`kolibri-core/src/logo.rs`](kolibri-core/src/logo.rs) | Generated 1-bpp hummingbird bitmaps for the OLED |
+| [`boards/README.md`](boards/README.md) | **How to add a board, and what porting actually costs** |
+| [`boards/xiao-esp32c3/src/main.rs`](boards/xiao-esp32c3/src/main.rs) | Entry point, pin map, on-chip sensor, task declarations |
+| [`boards/xiao-esp32c3/.cargo/config.toml`](boards/xiao-esp32c3/.cargo/config.toml) | Target, linker flags, `cargo run` runner |
 | [`assets/`](assets/) | Logo master, wordmarks, and the OLED preview |
-| [`tools/gen-logo.py`](tools/gen-logo.py) | Regenerates `src/logo.rs` from the logo master |
+| [`tools/gen-logo.py`](tools/gen-logo.py) | Regenerates `kolibri-core/src/logo.rs` from the logo master |
 | [`tools/gen-oled-preview.py`](tools/gen-oled-preview.py) | Regenerates the README's OLED preview from the real layout |
-| [`.cargo/config.toml`](.cargo/config.toml) | Target, linker flags, `cargo run` runner |
-| [`rust-toolchain.toml`](rust-toolchain.toml) | Pinned toolchain + RISC-V target |
+| [`rust-toolchain.toml`](rust-toolchain.toml) | Pinned toolchain + one target per board |
 | [`deny.toml`](deny.toml) | Dependency licence / advisory policy |
 | [`.vscode/`](.vscode/) | Settings, tasks, extensions, debug configs |
-| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | fmt, clippy, build, image, cargo-deny |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | fmt, clippy, per-board build, image, cargo-deny |
+
+### Supporting another MCU
+
+[`boards/README.md`](boards/README.md) is the guide: which layers Embassy makes
+free (the executor, timers, `Signal`/`Watch`, and every driver that speaks
+`embedded-hal-async`), which it does not (the HAL, the arch port and time
+driver, the panic handler, the linker script), and the six steps a new board
+crate has to cover. The short version is that another Espressif RISC-V chip is
+close to free, and a different vendor is a port of `boards/<name>/` alone.
 
 ### Changing the temperature source
 
@@ -249,23 +291,37 @@ rather than claiming to be a thermometer.
 For actual ambient temperature, hang an I²C sensor off the same `D4`/`D5` bus —
 an SHT4x (`0x44`), a BME280 (`0x76`/`0x77`) or an AHT20 (`0x38`); none of them
 collide with the panel at `0x3C`. The firmware is arranged so that this is a
-small change: implement `TemperatureSource` for the new part and point the
-`Source` type alias at it. Note that sharing the bus with the display means
-wrapping the `I2c` in an `embassy_sync::mutex::Mutex` and handing each task an
-`I2cDevice`.
+small change: implement `kolibri_core::temperature::Source` for the new part and
+point the board's `Sensor` type alias at it. Nothing in `kolibri-core` needs
+editing. Note that sharing the bus with the display means wrapping the `I2c` in
+an `embassy_sync::mutex::Mutex` and handing each task an `I2cDevice`.
 
-### Changing the LED pin or blink rate
+`Celsius::from_tenths` is there so a part that reports raw integer ticks never
+has to touch a float — these chips have no FPU.
 
-Both live at the top of [`src/main.rs`](src/main.rs): `BLINK_PERIOD`,
-`BLINK_PERIOD_FAST`, `HEARTBEAT_PERIOD`, and the `peripherals.GPIO10` argument
-to `Output::new` in `main`.
+### Changing the pins, or the timings
+
+They live in different places on purpose. **Pins and addresses are board facts**,
+at the top of
+[`boards/xiao-esp32c3/src/main.rs`](boards/xiao-esp32c3/src/main.rs): the
+`peripherals.GPIO10` argument to `Output::new`, the `GPIO6`/`GPIO7` I²C pair,
+`DISPLAY_ADDRESS` and `I2C_FREQUENCY`.
+
+**Timings are application policy**, so every board agrees on them and they live
+in `kolibri-core`: `blink::PERIOD` and `blink::PERIOD_FAST`,
+`heartbeat::PERIOD`, `display::PERIOD` and `display::SPLASH_PERIOD`, and
+`temperature::PERIOD`.
 
 ---
 
 ## Crate versions
 
-These are a **matched set** — `esp-rtos` 0.4 requires `esp-hal` ~1.2 and
-`embassy-sync` ^0.8. Bumping one alone will not resolve.
+The Embassy versions are pinned once in `[workspace.dependencies]`; the
+`esp-*` crates are pinned in the board's own manifest, so a second board for
+another vendor touches nothing outside its directory.
+
+The esp-rs crates are a **matched set** — `esp-rtos` 0.4 requires `esp-hal` ~1.2
+and `embassy-sync` ^0.8. Bumping one alone will not resolve.
 
 | Crate | Version |
 |---|---|
@@ -285,17 +341,22 @@ These are a **matched set** — `esp-rtos` 0.4 requires `esp-hal` ~1.2 and
 
 ## CI
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and PR:
-`cargo fmt --check`, `cargo clippy -D warnings`, a release build, and
-`cargo-deny` (advisories, licences, bans, sources). It uploads a flashable
-`firmware.bin` (bootloader + partition table + app, ~190 KB) as a build artifact:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and PR.
+A `portable core` job runs `cargo fmt --check` and clippy over `kolibri-core`
+**for the host target** — the standing check that the portable crate has not
+grown a dependency on a HAL. A `board` job then runs clippy and a release build
+for each entry in its matrix, one per directory under `boards/`. `cargo-deny`
+(advisories, licences, bans, sources) runs alongside. Each board uploads a
+flashable `firmware.bin` (bootloader + partition table + app, ~195 KB) as a build
+artifact:
 
 ```sh
 espflash write-bin 0x0 firmware.bin   # flash a CI artifact directly
 ```
 
 Dependabot proposes weekly `cargo` and `github-actions` updates, grouped so the
-esp-rs and Embassy crates move together.
+esp-rs and Embassy crates move together. One `cargo` entry covers the whole
+workspace.
 
 ---
 
@@ -316,7 +377,8 @@ above to match.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: `cargo fmt`,
-`cargo clippy -D warnings`, and flash it to a real board before opening a PR.
+`cargo clippy -D warnings` on the core and on the board, and flash it to a real
+board before opening a PR.
 
 ## Licence
 

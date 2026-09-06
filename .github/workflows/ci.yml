@@ -21,34 +21,65 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  check:
-    name: fmt / clippy / build
+  core:
+    name: portable core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Reads rust-toolchain.toml, so the channel and the
-      # riscv32imc-unknown-none-elf target come from a single source of truth
-      # shared with local development. Includes its own cargo cache.
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          # This action exports RUSTFLAGS=-D warnings by default, and the
-          # RUSTFLAGS environment variable *replaces* the rustflags in
-          # .cargo/config.toml rather than merging with them. That drops
-          # -Tlinkall.x and the release build fails to link with undefined
-          # _stack_start, _dram_data_start and friends. Clippy still gets
-          # -D warnings from its own step below.
           rustflags: ""
 
       - name: Check formatting
         run: cargo fmt --all --check
 
-      # Same invocation as .vscode/settings.json, so the editor and CI agree.
+      # Built for the host, deliberately: kolibri-core is supposed to compile
+      # without any HAL, and the cheapest way to keep that true is to build it
+      # somewhere no HAL could possibly be linked. If someone reaches for
+      # esp-hal in the portable crate, this step is what fails.
+      - name: Clippy (host target)
+        run: cargo clippy -p kolibri-core --all-features -- -D warnings
+
+  board:
+    name: ${{ matrix.board }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # One entry per directory under boards/. `chip` is what espflash
+          # needs to assemble the flashable image.
+          - board: xiao-esp32c3
+            chip: esp32c3
+            target: riscv32imc-unknown-none-elf
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads rust-toolchain.toml, so the channel and every board target come
+      # from a single source of truth shared with local development. Includes
+      # its own cargo cache.
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # This action exports RUSTFLAGS=-D warnings by default, and the
+          # RUSTFLAGS environment variable *replaces* the rustflags in the
+          # board's .cargo/config.toml rather than merging with them. That
+          # drops -Tlinkall.x and the release build fails to link with
+          # undefined _stack_start, _dram_data_start and friends. Clippy still
+          # gets -D warnings from its own step below.
+          rustflags: ""
+
+      # Every board step runs from inside the board directory: that is how
+      # Cargo picks up its .cargo/config.toml, and with it the target triple
+      # and the linker flags.
       - name: Clippy
+        working-directory: boards/${{ matrix.board }}
         run: cargo clippy --all-features -- -D warnings
 
       - name: Build (release)
+        working-directory: boards/${{ matrix.board }}
         run: cargo build --release
 
       - name: Install espflash
@@ -57,13 +88,15 @@ jobs:
           tool: espflash
 
       # --merge produces a single image flashable at offset 0x0 (bootloader +
-      # partition table + app). --skip-padding keeps the artifact ~165 KB
-      # instead of padding out to the full 4 MB flash size.
+      # partition table + app). --skip-padding keeps the artifact ~195 KB
+      # instead of padding out to the full 4 MB flash size. The binary is named
+      # `kolibri` regardless of board (see the board's [[bin]] section), and the
+      # workspace shares one target/ directory at the repository root.
       - name: Build flashable image
         run: |
           espflash save-image \
-            target/riscv32imc-unknown-none-elf/release/kolibri \
-            --chip esp32c3 \
+            target/${{ matrix.target }}/release/kolibri \
+            --chip ${{ matrix.chip }} \
             --merge \
             --skip-padding \
             firmware.bin
@@ -71,10 +104,10 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-esp32c3
+          name: firmware-${{ matrix.board }}
           path: |
             firmware.bin
-            target/riscv32imc-unknown-none-elf/release/kolibri
+            target/${{ matrix.target }}/release/kolibri
           if-no-files-found: error
 
   deny:

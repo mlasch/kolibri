@@ -1,7 +1,10 @@
 {
   // --- Cross-compilation ---------------------------------------------------
-  // Stated explicitly so rust-analyzer is correct even if it fails to pick up
-  // the [build] target from .cargo/config.toml.
+  // rust-analyzer analyses the whole workspace with one target, and it will not
+  // pick up a board's .cargo/config.toml (that only applies when Cargo is run
+  // from inside the board directory). So the board target is stated here.
+  // kolibri-core compiles for it happily too. Change this line when you make a
+  // different board the one you are working on.
   "rust-analyzer.cargo.target": "riscv32imc-unknown-none-elf",
 
   // The single most important setting for a no_std project. Left on, these make

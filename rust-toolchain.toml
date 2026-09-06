@@ -3,6 +3,10 @@
 # esp-hal 1.2 / esp-rtos 0.4 / esp-println 0.18 all declare rust-version = 1.95.
 channel    = "1.98.1"
 components = ["rustfmt", "clippy", "rust-src"]
+# One entry per board under boards/, so a fresh checkout can build all of them.
 # The ESP32-C3 is RISC-V, so a precompiled `core` is available from rustup and
-# the whole project builds on stable -- no nightly, no -Z build-std.
-targets    = ["riscv32imc-unknown-none-elf"]
+# the whole project builds on stable -- no nightly, no -Z build-std. An Xtensa
+# board (ESP32, ESP32-S2/S3) would be the exception: those need the espup
+# toolchain and -Z build-std, and this file could no longer pin a stable
+# channel for everyone.
+targets    = ["riscv32imc-unknown-none-elf"] # boards/xiao-esp32c3

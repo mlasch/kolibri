@@ -1,0 +1,47 @@
+[package]
+name        = "kolibri-core"
+description = "MCU-independent half of the kolibri firmware: tasks, drawing, and the sensor abstraction"
+keywords    = ["embassy", "embedded", "no-std", "embedded-graphics", "oled"]
+categories  = ["embedded", "no-std"]
+readme      = "../README.md"
+# Part of a firmware project, not a general-purpose crate.
+publish     = false
+
+version      .workspace = true
+edition      .workspace = true
+rust-version .workspace = true
+license      .workspace = true
+repository   .workspace = true
+
+# Nothing here may depend on a HAL. Every dependency below is generic over the
+# chip: the Embassy crates need only a time driver and a critical-section impl
+# (both supplied by whichever HAL the board crate links), and the display stack
+# talks to `embedded-hal-async` traits rather than to concrete peripherals.
+# `cargo build` at the workspace root compiles this crate for the host, which is
+# the cheapest possible check that the rule still holds.
+[dependencies]
+embassy-time    = { workspace = true }
+embassy-sync    = { workspace = true }
+embassy-futures = { workspace = true }
+
+# Only the traits, so a board can hand over any HAL's pin or bus.
+embedded-hal       = { workspace = true }
+embedded-hal-async = { workspace = true }
+
+embedded-graphics = { workspace = true }
+# SH1106 OLED support. `oled_async` is the SH110x-capable descendant of the
+# `ssd1306` crate: same architecture and embedded-graphics integration, but its
+# flush re-sends the page + column address for every page. That is mandatory
+# here -- the SH1106 has no horizontal addressing mode, so the `ssd1306` crate's
+# "stream all 8 pages back-to-back" flush would rewrite page 0 eight times.
+oled_async = { workspace = true }
+# `AsyncWriteOnlyDataCommand` and `DisplayError`, for the blanket `Panel` impl.
+display-interface = { workspace = true }
+# Adapts an embedded-hal-async I2c into the command/data interface oled_async
+# consumes. Generic over the bus, so it is board-independent.
+display-interface-i2c = { workspace = true }
+
+log = { workspace = true }
+
+[lints]
+workspace = true

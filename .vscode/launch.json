@@ -9,6 +9,10 @@
       // Serial/JTAG peripheral, so this needs no external debug probe -- but it
       // does need exclusive access to that device. Stop any running
       // `cargo run` / espflash monitor first.
+      //
+      // `cwd` and `programBinary` stay at the workspace root: every member of
+      // the workspace shares the root target/ directory, and the board's
+      // [[bin]] name is `kolibri` whatever the board.
       "type": "probe-rs-debug",
       "request": "launch",
       "name": "Debug (probe-rs, built-in USB-JTAG)",

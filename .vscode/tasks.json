@@ -2,26 +2,50 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "cargo build",
+      // The portable crate only, built for the host. This is the check that
+      // kolibri-core has not quietly grown a dependency on a HAL.
+      "label": "cargo clippy (core)",
       "type": "cargo",
-      "command": "build",
-      "problemMatcher": ["$rustc"],
-      "group": { "kind": "build", "isDefault": true }
-    },
-    {
-      "label": "cargo build --release",
-      "type": "cargo",
-      "command": "build",
-      "args": ["--release"],
+      "command": "clippy",
+      "args": ["-p", "kolibri-core", "--all-features", "--", "-D", "warnings"],
       "problemMatcher": ["$rustc"],
       "group": "build"
     },
     {
+      // Board tasks run from inside the board directory: that is how Cargo
+      // finds boards/xiao-esp32c3/.cargo/config.toml, and with it the target
+      // triple, -Tlinkall.x and the espflash runner. Building a board from the
+      // repository root will not link.
+      "label": "cargo build",
+      "type": "shell",
+      "command": "cargo build",
+      "options": { "cwd": "${workspaceFolder}/boards/xiao-esp32c3" },
+      "problemMatcher": {
+        "base": "$rustc",
+        "fileLocation": ["autoDetect", "${workspaceFolder}/boards/xiao-esp32c3"]
+      },
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "cargo build --release",
+      "type": "shell",
+      "command": "cargo build --release",
+      "options": { "cwd": "${workspaceFolder}/boards/xiao-esp32c3" },
+      "problemMatcher": {
+        "base": "$rustc",
+        "fileLocation": ["autoDetect", "${workspaceFolder}/boards/xiao-esp32c3"]
+      },
+      "group": "build"
+    },
+    {
       "label": "cargo clippy",
-      "type": "cargo",
-      "command": "clippy",
-      "args": ["--all-features", "--", "-D", "warnings"],
-      "problemMatcher": ["$rustc"],
+      "type": "shell",
+      "command": "cargo clippy --all-features -- -D warnings",
+      "options": { "cwd": "${workspaceFolder}/boards/xiao-esp32c3" },
+      "problemMatcher": {
+        "base": "$rustc",
+        "fileLocation": ["autoDetect", "${workspaceFolder}/boards/xiao-esp32c3"]
+      },
       "group": "build"
     },
     {
@@ -35,10 +59,13 @@
       // Flashes over USB-C and opens the serial monitor. Stop it before
       // starting a probe-rs debug session -- both want the same USB device.
       "label": "flash + monitor",
-      "type": "cargo",
-      "command": "run",
-      "args": ["--release"],
-      "problemMatcher": ["$rustc"],
+      "type": "shell",
+      "command": "cargo run --release",
+      "options": { "cwd": "${workspaceFolder}/boards/xiao-esp32c3" },
+      "problemMatcher": {
+        "base": "$rustc",
+        "fileLocation": ["autoDetect", "${workspaceFolder}/boards/xiao-esp32c3"]
+      },
       "presentation": { "reveal": "always", "panel": "dedicated" }
     }
   ]

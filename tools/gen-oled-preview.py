@@ -3,8 +3,10 @@
 
 The point of this script is that the README image cannot quietly drift away
 from the code: the glyphs come out of embedded-graphics' own font sheets, the
-bird comes out of the generated src/logo.rs, and the coordinates below are the
-same ones main.rs passes to `Text::with_baseline` and `Image::new`.
+bird comes out of the generated kolibri-core/src/logo.rs, and the coordinates
+below are the same ones kolibri-core/src/display.rs passes to
+`Text::with_baseline` and `Image::new`. The board name on the splash comes from
+`Labels::board` in the board crate -- boards/xiao-esp32c3/src/main.rs.
 
     python3 tools/gen-oled-preview.py      # needs Pillow and a fetched cargo registry
 
@@ -22,7 +24,7 @@ from pathlib import Path
 from PIL import Image
 
 OUT = Path("assets/oled-preview.png")
-LOGO_RS = Path("src/logo.rs")
+LOGO_RS = Path("kolibri-core/src/logo.rs")
 
 # Panel geometry.
 WIDTH, HEIGHT = 128, 64
@@ -108,7 +110,7 @@ class MonoFont:
 
 
 def load_logo(name: str) -> tuple[list[list[bool]], int, int]:
-    """Decode one `ImageRaw` back out of src/logo.rs."""
+    """Decode one `ImageRaw` back out of kolibri-core/src/logo.rs."""
     source = LOGO_RS.read_text()
 
     width = int(
@@ -138,7 +140,7 @@ def blit(canvas, logo, origin: tuple[int, int]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The two screens, drawn with main.rs's coordinates
+# The two screens, drawn with kolibri-core/src/display.rs's coordinates
 # ---------------------------------------------------------------------------
 
 
