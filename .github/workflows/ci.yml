@@ -25,7 +25,7 @@ jobs:
     name: fmt / clippy / build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Reads rust-toolchain.toml, so the channel and the
       # riscv32imc-unknown-none-elf target come from a single source of truth
@@ -73,7 +73,7 @@ jobs:
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories licenses bans sources
