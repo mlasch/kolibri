@@ -37,13 +37,28 @@ logged over USB serial, so `cargo run` on a bare board still shows `led on` /
 | Silkscreen | GPIO | Notes |
 |---|---|---|
 | D0–D3 | 2, 3, 4, 5 | ADC-capable. **GPIO2 is a strapping pin.** |
-| D4 / D5 | 6, 7 | I²C SDA / SCL |
+| D4 / D5 | 6, 7 | I²C SDA / SCL — **used for the SH1106 OLED here** |
 | D6 / D7 | 21, 20 | UART TX / RX |
 | D8 / D9 | 8, 9 | SPI SCK / MISO. **Both are strapping pins** (GPIO9 = BOOT). |
 | D10 | 10 | SPI MOSI — **used for the LED here** |
 
 Avoid GPIO2, GPIO8 and GPIO9 for outputs: driving them at reset can put the chip
 into the wrong boot mode.
+
+### OLED display
+
+An SH1106 128x64 I²C module wires to `D4` (SDA), `D5` (SCL), `3V3` and `GND`.
+Use the module's own pull-ups — the C3's internal ones are ~45 kΩ, too weak for
+the 400 kHz the firmware configures. The default address is `0x3C`.
+
+The driver is [`oled_async`](https://crates.io/crates/oled_async), not the more
+familiar `ssd1306` crate. The SH1106 has **no horizontal addressing mode**: its
+column pointer wraps within the current page rather than advancing to the next
+one, so `ssd1306`'s `flush` — which streams all 8 pages back-to-back and relies
+on that auto-advance — rewrites page 0 eight times instead of drawing a frame.
+`oled_async` re-sends the page and column address per page, and its
+`Sh1106_128_64` variant carries the `COLUMN_OFFSET = 2` that the controller's
+132-column RAM requires.
 
 ---
 

@@ -37,6 +37,17 @@ embassy-futures = "0.1"
 
 log = "0.4"
 
+# SH1106 OLED on I2C. `oled_async` is the SH110x-capable descendant of the
+# `ssd1306` crate: same architecture and embedded-graphics integration, but its
+# flush re-sends the page + column address for every page. That is mandatory
+# here -- the SH1106 has no horizontal addressing mode, so the `ssd1306` crate's
+# "stream all 8 pages back-to-back" flush would rewrite page 0 eight times.
+oled_async = "0.2.1"
+# Adapts an embedded-hal-async I2c into the AsyncWriteOnlyDataCommand that
+# oled_async consumes.
+display-interface-i2c = "0.5.0"
+embedded-graphics = "0.8"
+
 [profile.dev]
 # A fully unoptimized esp-hal build is enormous and slow to flash.
 opt-level = "s"
