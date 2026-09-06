@@ -14,15 +14,29 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write;
+
+use display_interface_i2c::I2CInterface;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, signal::Signal};
 use embassy_time::{Duration, Ticker};
+use embedded_graphics::{
+    mono_font::{MonoTextStyle, ascii::FONT_6X10},
+    pixelcolor::BinaryColor,
+    prelude::*,
+    primitives::{PrimitiveStyle, Rectangle},
+    text::{Baseline, Text},
+};
 use esp_backtrace as _;
 use esp_hal::{
+    Async,
     gpio::{Level, Output, OutputConfig},
+    i2c::master::{Config as I2cConfig, I2c},
+    time::Rate,
     timer::timg::TimerGroup,
 };
+use oled_async::{Builder, displays::sh1106::Sh1106_128_64, mode::GraphicsMode};
 
 // Emits the esp-idf application descriptor the second-stage bootloader expects.
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -41,12 +55,40 @@ const BLINK_PERIOD_FAST: Duration = Duration::from_millis(100);
 /// How often the heartbeat task reports in.
 const HEARTBEAT_PERIOD: Duration = Duration::from_secs(5);
 
+/// How often the OLED is redrawn. Every redraw pushes the whole 1 KiB frame
+/// over I2C, so this is the main cost of having a display attached.
+const DISPLAY_PERIOD: Duration = Duration::from_secs(1);
+
+/// I2C address of the SH1106 module. Almost all of them are `0x3C`; boards with
+/// the SA0 jumper bridged answer on `0x3D` instead.
+const DISPLAY_ADDRESS: u8 = 0x3C;
+
+/// SH1106 control byte that marks the following bytes as pixel data rather than
+/// commands.
+const DISPLAY_DATA_BYTE: u8 = 0x40;
+
+/// I2C bus speed. The default 100 kHz would take ~100 ms to push a full frame;
+/// 400 kHz brings that down to ~26 ms.
+const I2C_FREQUENCY: Rate = Rate::from_khz(400);
+
+/// Framebuffer size: one bit per pixel over a 128x64 panel.
+///
+/// Passed explicitly because `GraphicsMode`'s default is sized for a 160x160
+/// panel and would waste 2 KiB of RAM on this one.
+const DISPLAY_BUFFER_BYTES: usize = 128 * 64 / 8;
+
+/// The fully-applied display type, needed because Embassy tasks cannot take
+/// `impl Trait` arguments.
+type Display = GraphicsMode<Sh1106_128_64, I2CInterface<I2c<'static, Async>>, DISPLAY_BUFFER_BYTES>;
+
 // The LED pin is selected where `Output::new` is called in `main`, because
 // peripheral singletons cannot be named in a `const`. On the XIAO ESP32-C3:
 //
-//   D10 = GPIO10   <- used here
-//   D0..D3 = GPIO2..GPIO5, D4 = GPIO6, D5 = GPIO7,
-//   D6 = GPIO21, D7 = GPIO20, D8 = GPIO8, D9 = GPIO9
+//   D10 = GPIO10   <- LED, used here
+//   D4 = GPIO6     <- I2C SDA, used here
+//   D5 = GPIO7     <- I2C SCL, used here
+//   D0..D3 = GPIO2..GPIO5, D6 = GPIO21, D7 = GPIO20,
+//   D8 = GPIO8, D9 = GPIO9
 //
 // Avoid GPIO2, GPIO8 and GPIO9: they are strapping pins and driving them at
 // boot can put the chip into the wrong boot mode.
@@ -57,6 +99,50 @@ const HEARTBEAT_PERIOD: Duration = Duration::from_secs(5);
 /// `Signal` holding the latest value, with no locking on the reader side. Delete
 /// it (and the `select` in [`blink`]) if you only ever need a fixed rate.
 static BLINK_PERIOD_REQUEST: Signal<CriticalSectionRawMutex, Duration> = Signal::new();
+
+/// Mirrors [`BLINK_PERIOD_REQUEST`] to the display.
+///
+/// A `Signal` has exactly one consumer -- whoever calls `wait` takes the value
+/// and it is gone. Two readers therefore need two signals. Reach for
+/// `embassy_sync::watch::Watch` instead once a third task wants the same value.
+static DISPLAY_PERIOD_REQUEST: Signal<CriticalSectionRawMutex, Duration> = Signal::new();
+
+/// A fixed-capacity sink for `write!`, so text can be formatted on the stack.
+///
+/// `heapless::String` does the same job if you would rather take the extra
+/// dependency; this exists to keep the tree at four display crates instead of
+/// five. Writes past `N` bytes are dropped rather than panicking.
+struct TextBuf<const N: usize> {
+    buf: [u8; N],
+    len: usize,
+}
+
+impl<const N: usize> TextBuf<N> {
+    const fn new() -> Self {
+        Self {
+            buf: [0; N],
+            len: 0,
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        // Only whole `&str` chunks are ever appended, so the prefix is valid
+        // UTF-8 by construction.
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl<const N: usize> Write for TextBuf<N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let room = N - self.len;
+        if s.len() > room {
+            return Err(core::fmt::Error);
+        }
+        self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
+        self.len += s.len();
+        Ok(())
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tasks
@@ -112,11 +198,84 @@ async fn heartbeat() {
             "heartbeat (uptime {} s)",
             embassy_time::Instant::now().as_secs()
         );
-        BLINK_PERIOD_REQUEST.signal(if fast {
+        let period = if fast {
             BLINK_PERIOD_FAST
         } else {
             BLINK_PERIOD
-        });
+        };
+        BLINK_PERIOD_REQUEST.signal(period);
+        DISPLAY_PERIOD_REQUEST.signal(period);
+    }
+}
+
+/// Renders status to the OLED once per second.
+///
+/// Redrawing is a two-stage affair: `embedded-graphics` calls mutate an
+/// in-memory framebuffer, and nothing reaches the panel until `flush`. Drawing
+/// into RAM is infallible here, so only the I2C transfers can actually fail.
+#[embassy_executor::task]
+async fn display(mut display: Display) {
+    let text = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    let border = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
+    // `init` is where a wrong I2C address or unpowered panel shows up, so it is
+    // worth failing loudly rather than drawing into the void for ever.
+    if let Err(e) = display.init().await {
+        log::error!("display init failed: {e:?} (wrong address? check SDA/SCL)");
+        return;
+    }
+    log::info!("display ready on 0x{DISPLAY_ADDRESS:02x}");
+
+    let mut period = BLINK_PERIOD;
+    let mut ticker = Ticker::every(DISPLAY_PERIOD);
+
+    loop {
+        // Same shape as `blink`: tick on a schedule, but react to a new period
+        // the moment it arrives rather than at the next redraw.
+        match select(ticker.next(), DISPLAY_PERIOD_REQUEST.wait()).await {
+            Either::First(()) => {}
+            Either::Second(new_period) => period = new_period,
+        }
+
+        display.clear();
+
+        let mut line = TextBuf::<24>::new();
+        let _ = write!(line, "up {} s", embassy_time::Instant::now().as_secs());
+
+        let mut rate = TextBuf::<24>::new();
+        let _ = write!(rate, "blink {} ms", period.as_millis());
+
+        // Drawing only touches the framebuffer, so these cannot fail in
+        // practice -- but embedded-graphics is generic over targets that can.
+        let drawn = Rectangle::new(Point::zero(), Size::new(128, 64))
+            .into_styled(border)
+            .draw(&mut display)
+            .and_then(|()| {
+                Text::with_baseline("kolibri", Point::new(6, 6), text, Baseline::Top)
+                    .draw(&mut display)
+                    .map(|_| ())
+            })
+            .and_then(|()| {
+                Text::with_baseline(line.as_str(), Point::new(6, 24), text, Baseline::Top)
+                    .draw(&mut display)
+                    .map(|_| ())
+            })
+            .and_then(|()| {
+                Text::with_baseline(rate.as_str(), Point::new(6, 38), text, Baseline::Top)
+                    .draw(&mut display)
+                    .map(|_| ())
+            });
+
+        if let Err(e) = drawn {
+            log::warn!("display draw failed: {e:?}");
+            continue;
+        }
+
+        // The only genuinely fallible step. A yanked cable shows up here, and a
+        // transient failure should not kill the task.
+        if let Err(e) = display.flush().await {
+            log::warn!("display flush failed: {e:?}");
+        }
     }
 }
 
@@ -146,10 +305,29 @@ async fn main(spawner: Spawner) {
     // LED off.
     let led = Output::new(peripherals.GPIO10, Level::Low, OutputConfig::default());
 
+    // D4/D5 on the silkscreen. `into_async` is what makes the display driver
+    // await its transfers instead of spinning on the bus, so a ~26 ms frame
+    // push does not stall `blink`.
+    let i2c = I2c::new(
+        peripherals.I2C0,
+        I2cConfig::default().with_frequency(I2C_FREQUENCY),
+    )
+    .expect("i2c config rejected")
+    .with_sda(peripherals.GPIO6)
+    .with_scl(peripherals.GPIO7)
+    .into_async();
+
+    // The SH1106 has 132 columns of RAM behind a 128 px panel; `Sh1106_128_64`
+    // carries the resulting COLUMN_OFFSET of 2 so the image is not shifted.
+    let oled: Display = Builder::new(Sh1106_128_64 {})
+        .connect(I2CInterface::new(i2c, DISPLAY_ADDRESS, DISPLAY_DATA_BYTE))
+        .into();
+
     // A task function returns Err only when its pool is already full, which for
     // a single-instance task spawned once can never happen.
     spawner.spawn(blink(led).expect("blink task pool exhausted"));
     spawner.spawn(heartbeat().expect("heartbeat task pool exhausted"));
+    spawner.spawn(display(oled).expect("display task pool exhausted"));
 
     // Nothing left to do here. Returning from an Embassy `main` is fine -- the
     // executor keeps running the spawned tasks. Never busy-wait or call a
