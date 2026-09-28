@@ -1,41 +1,11 @@
-//! A small record that survives a power cycle, kept in NOR flash.
+//! A small record kept in NOR flash across resets, power cuts and reflashes.
 //!
-//! Firmware needs somewhere to remember a handful of bytes -- Wi-Fi
-//! credentials, a calibration offset, which screen was last shown -- across
-//! resets and reflashes. This module is that somewhere, written against
-//! [`embedded_storage::nor_flash::NorFlash`] so it works on any chip whose HAL
-//! can hand over an erasable flash region.
+//! One record, rewritten whole, in two alternating erase-block slots. A save
+//! erases the older slot, writes the payload, and writes the header last, so an
+//! interrupted save leaves the previous record intact. [`Store::load`] takes the
+//! valid slot with the higher sequence number.
 //!
-//! # What it is not
-//!
-//! It is not a filesystem and not a key-value store. There is exactly one
-//! record, it is a byte string, and every save rewrites all of it. If you need
-//! independently updatable keys, wear levelling across a large partition, or
-//! records bigger than an erase block, reach for `sequential-storage` instead;
-//! this is deliberately a few hundred bytes of flash rather than a few
-//! thousand.
-//!
-//! # How a half-finished write is survived
-//!
-//! NOR flash cannot be updated in place: a sector is erased to all-ones and
-//! then bits are cleared. Erasing the only copy of the record and losing power
-//! mid-write would therefore lose the data. So the store keeps *two* slots, one
-//! erase block each, and alternates between them:
-//!
-//! ```text
-//! slot 0 [ header | payload ]  <- seq 6, current
-//! slot 1 [ header | payload ]  <- seq 5, previous; next save lands here
-//! ```
-//!
-//! A save erases the older slot, writes the payload, and writes the header
-//! last. The header is the commit point: until its magic, sequence number and
-//! CRC are on flash the slot does not count, so an interrupted save leaves the
-//! previous record exactly as it was. [`Store::load`] takes the valid slot with
-//! the higher sequence number.
-//!
-//! # Layout
-//!
-//! Each slot starts with a [`HEADER_LEN`]-byte header, all little-endian:
+//! Each slot starts with a [`HEADER_LEN`]-byte little-endian header:
 //!
 //! ```text
 //! 0..4    magic, b"KLBS"
@@ -46,38 +16,20 @@
 //! 12..16  CRC-32 of bytes 0..12 followed by the whole padded payload block
 //! ```
 //!
-//! The payload block that follows is always `N` bytes -- the capacity, not the
-//! length -- because flash writes have a granularity (four bytes on an ESP32)
-//! and padding to a fixed size keeps every read, write and erase this module
-//! issues trivially aligned.
-//!
-//! # Stack
-//!
-//! Some drivers want a word-aligned *buffer* as well as a word-aligned offset,
-//! and copy through a scratch buffer as large as an erase block when they do
-//! not get one -- esp-storage does exactly that, so a load costs a transient
-//! 4 KiB of stack there. Call this from `main`, or from a task whose stack has
-//! room for it.
+//! The payload block is always `N` bytes so every access stays aligned. Some
+//! drivers (esp-storage) copy unaligned buffers through an erase-block-sized
+//! stack buffer, so a load can cost 4 KiB of stack.
 
 use embedded_storage::nor_flash::NorFlash;
 
 /// Bytes of bookkeeping in front of each stored payload.
-///
-/// A record therefore occupies `HEADER_LEN + N` bytes of its slot, and that
-/// has to fit in one erase block.
 pub const HEADER_LEN: usize = 16;
 
-/// Identifies a slot as ours rather than as whatever the partition held before.
 const MAGIC: [u8; 4] = *b"KLBS";
 
-/// Bumped only if the layout above changes incompatibly. An older format reads
-/// back as "no record", which is the safe answer: the firmware falls back to
-/// its defaults and the next save rewrites the slot.
+/// An older format reads back as "no record".
 const FORMAT: u8 = 1;
 
-/// Two is the minimum that keeps one intact copy at all times, and the maximum
-/// that is worth the flash: this record is rewritten rarely, so wear is not the
-/// constraint that would justify more.
 const SLOTS: usize = 2;
 
 /// Why a load or save could not be completed.
@@ -85,17 +37,15 @@ const SLOTS: usize = 2;
 pub enum Error<E> {
     /// The underlying flash refused a read, write or erase.
     Flash(E),
-    /// The region is smaller than the two erase blocks the store needs.
+    /// The region is smaller than two erase blocks.
     TooSmall,
-    /// `N` does not suit this flash: a record does not fit in an erase block,
-    /// or the payload capacity is not a multiple of the read/write granularity.
+    /// A record does not fit an erase block, or `N` is not write-granular.
     Layout,
     /// The payload handed to [`Store::save`] is longer than `N`.
     TooLarge,
 }
 
-/// The parsed header of one slot. Present only means "plausibly ours"; the CRC
-/// is checked later, once the payload has been read.
+/// A slot header that looks like ours; the CRC is checked after the payload is read.
 #[derive(Clone, Copy)]
 struct Header {
     raw: [u8; HEADER_LEN],
@@ -105,28 +55,13 @@ struct Header {
 }
 
 /// A single `N`-byte record kept in the first two erase blocks of `flash`.
-///
-/// `N` is the payload *capacity* and must be a multiple of the flash's write
-/// granularity; [`Store::new`] rejects anything else rather than failing
-/// obscurely on the first save.
 pub struct Store<F, const N: usize> {
     flash: F,
 }
 
 impl<F: NorFlash, const N: usize> Store<F, N> {
     /// Takes ownership of a flash region and checks it can hold the record.
-    ///
-    /// The region is normally a partition rather than the whole chip: on an
-    /// ESP32 that is an entry from the partition table, so the store can never
-    /// reach the application image no matter what it is asked to write.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Layout`] if `N` does not suit this flash, [`Error::TooSmall`]
-    /// if the region cannot hold two slots.
     pub fn new(flash: F) -> Result<Self, Error<F::Error>> {
-        // The store only ever reads or writes a whole header or a whole
-        // payload block, so those two lengths are all that has to divide.
         let granular =
             |len: usize| len.is_multiple_of(F::READ_SIZE) && len.is_multiple_of(F::WRITE_SIZE);
         if !granular(HEADER_LEN) || !granular(N) || HEADER_LEN + N > F::ERASE_SIZE {
@@ -138,20 +73,10 @@ impl<F: NorFlash, const N: usize> Store<F, N> {
         Ok(Self { flash })
     }
 
-    /// Reads the current record into `into`.
-    ///
-    /// Returns the payload length, which is however many leading bytes of
-    /// `into` were actually stored; the rest is the zero padding. `Ok(None)`
-    /// means there is nothing to read -- a blank partition, a record from an
-    /// older format, or one whose CRC does not check out.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::Flash`] if the region could not be read.
+    /// Reads the current record into `into` and returns its length, or
+    /// `Ok(None)` if there is no valid record.
     pub fn load(&mut self, into: &mut [u8; N]) -> Result<Option<usize>, Error<F::Error>> {
-        // Both headers first, then the payloads newest-first: reading a payload
-        // overwrites `into`, so a slot that turns out to be corrupt must not be
-        // read after the good one.
+        // Newest first: a corrupt slot read after the good one would clobber `into`.
         let mut order = [0, 1];
         let headers = [self.header(0)?, self.header(1)?];
         if supersedes(headers[1], headers[0]) {
@@ -172,23 +97,15 @@ impl<F: NorFlash, const N: usize> Store<F, N> {
         Ok(None)
     }
 
-    /// Replaces the current record with `payload`.
-    ///
-    /// Writes to whichever slot is not current, so the record being replaced
-    /// stays readable until this returns.
-    ///
-    /// # Errors
-    ///
-    /// [`Error::TooLarge`] if `payload` exceeds `N`, [`Error::Flash`] if the
-    /// region could not be erased or written.
+    /// Replaces the current record with `payload`, writing to the slot that
+    /// does not hold it.
     pub fn save(&mut self, payload: &[u8]) -> Result<(), Error<F::Error>> {
         if payload.len() > N {
             return Err(Error::TooLarge);
         }
 
         let headers = [self.header(0)?, self.header(1)?];
-        // With nothing stored yet there is no slot to preserve, so start at the
-        // front; otherwise take the one the current record is not in.
+        // With nothing stored yet, start at slot 0; otherwise use the other slot.
         let current = match (headers[0], headers[1]) {
             (None, None) => None,
             (a, b) => Some(usize::from(supersedes(b, a))),
@@ -216,7 +133,7 @@ impl<F: NorFlash, const N: usize> Store<F, N> {
         self.flash
             .write(Self::payload_offset(slot), &block)
             .map_err(Error::Flash)?;
-        // Last, and only now does the slot count as written.
+        // The header is the commit point: only now does the slot count.
         self.flash.write(base, &header).map_err(Error::Flash)?;
         Ok(())
     }
@@ -255,13 +172,11 @@ impl<F: NorFlash, const N: usize> Store<F, N> {
     }
 }
 
-/// Whether `a` is the newer of two slots. A slot that is not there at all loses
-/// to one that is.
+/// Whether `a` is newer than `b`. A missing slot loses to a present one.
 fn supersedes(a: Option<Header>, b: Option<Header>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => {
-            // Sequence numbers wrap, so compare the distance rather than the
-            // values: `a` is newer while it is less than half the range ahead.
+            // Sequence numbers wrap: `a` is newer while less than half the range ahead.
             let ahead = a.seq.wrapping_sub(b.seq);
             ahead != 0 && ahead < 0x8000_0000
         }
@@ -270,17 +185,13 @@ fn supersedes(a: Option<Header>, b: Option<Header>) -> bool {
     }
 }
 
-/// CRC-32 as used by zip and Ethernet, over `head` followed by `body`.
-///
-/// Bit-at-a-time rather than table-driven: a few hundred bytes are checksummed
-/// once per boot and once per save, so the 1 KiB lookup table would cost more
-/// flash than the loop ever costs time.
+/// CRC-32 (zip/Ethernet) over `head` followed by `body`. Bitwise rather than
+/// table-driven: the 1 KiB table would cost more flash than the loop costs time.
 fn crc32(head: &[u8], body: &[u8]) -> u32 {
     let mut crc = u32::MAX;
     for &byte in head.iter().chain(body) {
         crc ^= u32::from(byte);
         for _ in 0..8 {
-            // Branchless: mask is all-ones exactly when the low bit is set.
             let mask = (crc & 1).wrapping_neg();
             crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
         }
@@ -297,10 +208,7 @@ mod tests {
     const CAPACITY: usize = SECTOR * 2;
     const PAYLOAD: usize = 32;
 
-    /// Enough of a NOR flash to be wrong in the same ways a real one is: reads
-    /// and writes are word-granular, erase sets ones, and a write can only
-    /// clear bits. Writing over live data therefore corrupts it here too,
-    /// which is what makes the slot alternation worth testing.
+    /// Mock NOR flash: word-granular, erase sets ones, writes only clear bits.
     struct Ram {
         bytes: [u8; CAPACITY],
     }
@@ -406,8 +314,7 @@ mod tests {
             assert_eq!(store.load(&mut buf), Ok(Some(4)));
             assert_eq!(&buf[..4], &[round; 4]);
         }
-        // Five saves into two slots only work if each one lands in the slot the
-        // other is not using.
+        // Consecutive saves must land in different slots.
         assert_ne!(
             store.flash.bytes[..HEADER_LEN],
             store.flash.bytes[SECTOR..SECTOR + HEADER_LEN]
@@ -420,8 +327,7 @@ mod tests {
         store.save(b"old").unwrap();
         store.save(b"new").unwrap();
 
-        // Flip a payload byte in the newer slot, leaving its header -- and so
-        // its sequence number -- intact. Only the CRC can catch this.
+        // Corrupt the newer payload but not its header; only the CRC catches this.
         store.flash.bytes[SECTOR + HEADER_LEN] ^= 0xFF;
 
         let mut buf = [0u8; PAYLOAD];
@@ -435,8 +341,7 @@ mod tests {
         store.save(b"old").unwrap();
         store.save(b"keep me").unwrap();
 
-        // A third save would erase slot 0 and write it. Stop after the erase,
-        // which is what losing power mid-save looks like on the flash.
+        // Power lost right after a third save erased slot 0.
         store.flash.erase(0, SECTOR as u32).unwrap();
 
         let mut buf = [0u8; PAYLOAD];
@@ -503,14 +408,9 @@ mod tests {
         ));
     }
 
-    /// The provisioning script writes this same envelope from the host, and
-    /// nothing else checks that the two agree. Here it builds an image sized
-    /// for the mock flash above, and the store has to read the payload back --
-    /// so a change to the format on either side fails here rather than on a
-    /// board that quietly ignores the record it was provisioned with.
+    /// `tools/mk-settings.py` must write a record this store accepts.
     #[test]
     fn the_provisioning_script_writes_a_record_this_store_accepts() {
-        // `no_std` means no prelude for these, even with std linked for tests.
         use std::{format, string::ToString};
 
         let out =
@@ -518,8 +418,7 @@ mod tests {
         let status = std::process::Command::new("python3")
             .args(["../tools/mk-settings.py", "--hex", "de ad be ef"])
             .args(["--storage", "src/storage.rs"])
-            // Non-zero, so that a header field written at the wrong offset
-            // shows up as a difference rather than as another run of zeros.
+            // Non-zero, so a misplaced header field shows up.
             .args(["--sequence", "7"])
             .args(["--erase-size", &SECTOR.to_string()])
             .args(["--capacity", &PAYLOAD.to_string()])

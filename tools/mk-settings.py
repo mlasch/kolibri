@@ -1,28 +1,14 @@
 #!/usr/bin/env python3
 """Build a settings image, so a board can be flashed already provisioned.
 
-`kolibri_core::storage` keeps one record in the first two erase blocks of a
-flash partition, wrapped in a header the firmware checksums before it will
-believe a word of it. This script writes that record from the host, so a board
-can arrive with its Wi-Fi credentials -- or whatever else the firmware keeps --
-already in place, instead of being taught them one serial console at a time.
+Writes the `kolibri_core::storage` record envelope from the host. The format
+constants are parsed out of kolibri-core/src/storage.rs, so a format change
+that is not mirrored here fails loudly.
 
     python3 tools/mk-settings.py --boot-count 41
     espflash write-bin 0x9000 settings.bin
 
-The envelope is what this script owns: magic, format version, payload length,
-sequence number and CRC-32, laid out exactly as kolibri-core/src/storage.rs
-reads them back. Those constants are parsed out of the Rust rather than copied
-here, so the two cannot drift apart quietly: change the format and forget this
-script, and it stops with an error instead of writing a record that fails its
-checksum on the bench.
-
-The payload is the firmware's business, not the envelope's. Today's firmware
-reads the first four bytes as a little-endian boot counter (`count_boot` in
-boards/xiao-esp32c3/src/main.rs), which is what --boot-count writes; --text,
---hex and --file put arbitrary bytes there for whatever comes to read them.
-
-To see what a board is actually carrying, read the region back and decode it:
+Decode what a board carries:
 
     espflash read-flash 0x9000 0x2000 dump.bin
     python3 tools/mk-settings.py --inspect dump.bin
@@ -39,27 +25,20 @@ import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
-# Where the record format is defined. Nothing below hardcodes what it says.
 STORAGE_RS = Path("kolibri-core/src/storage.rs")
 
-# Where each board picks how much of a record its firmware may use.
 BOARD_MAIN = "boards/{board}/src/main.rs"
 DEFAULT_BOARD = "xiao-esp32c3"
 
-# Offset of the `nvs` partition in the table espflash generates by default.
-# A project that ships its own partitions.csv has to pass --offset.
+# `nvs` partition in espflash's default partition table.
 DEFAULT_OFFSET = 0x9000
 
-# Erase granularity of the SPI flash on every ESP32 part, and so the size of
-# one slot. `FlashStorage::SECTOR_SIZE` in esp-storage.
+# ESP32 flash sector size, and so the size of one slot.
 DEFAULT_ERASE_SIZE = 4096
 
-# An erased NOR cell reads as all ones.
 ERASED = b"\xff"
 
-# The header layout this script writes. `HEADER_LEN` is read from the Rust and
-# checked against this, because these offsets are the part that cannot be
-# derived -- if the header grows, the two files have to be changed together.
+# Header field offsets; must match storage.rs (HEADER_LEN is checked).
 MAGIC_AT = slice(0, 4)
 FORMAT_AT = 4
 LENGTH_AT = slice(6, 8)
@@ -137,8 +116,6 @@ def read_layout(
             f"a {layout.capacity}-byte record does not fit an "
             f"{layout.erase_size}-byte erase block"
         )
-    # Flash writes are word-granular on every ESP32; `Store::new` refuses a
-    # capacity that is not, and would reject this record on the device.
     if layout.capacity % 4:
         sys.exit(f"capacity {layout.capacity} is not a multiple of 4")
     return layout
@@ -160,12 +137,7 @@ def board_capacity(board: str) -> int:
 
 
 def slot(payload: bytes, layout: Layout, sequence: int) -> bytes:
-    """One slot: the header, the padded payload block, then erased flash.
-
-    The payload is padded out to the full capacity because that is what the
-    firmware checksums -- the length field says how much of it means anything,
-    but the CRC covers all of it.
-    """
+    """One slot: header, payload padded to capacity (the CRC covers all of it), erased flash."""
     if len(payload) > layout.capacity:
         sys.exit(f"payload is {len(payload)} bytes, capacity is {layout.capacity}")
 
@@ -175,21 +147,13 @@ def slot(payload: bytes, layout: Layout, sequence: int) -> bytes:
     header[FORMAT_AT] = layout.format
     header[LENGTH_AT] = len(payload).to_bytes(2, "little")
     header[SEQUENCE_AT] = sequence.to_bytes(4, "little")
-    # zlib's CRC-32 is the same reflected polynomial the Rust computes
-    # bit-at-a-time; both agree with the standard check value 0xCBF43926.
     header[CRC_AT] = zlib.crc32(bytes(header[CRC_COVERS]) + block).to_bytes(4, "little")
 
     return (bytes(header) + block).ljust(layout.erase_size, ERASED)
 
 
 def image(payload: bytes, layout: Layout, sequence: int) -> bytes:
-    """Every slot, not just the one being written.
-
-    Writing slot 0 alone would leave whatever is in slot 1 untouched, and if
-    that is a record with a higher sequence number the firmware would load it
-    in preference to this one. Erasing the rest is what makes the provisioned
-    record the one that wins.
-    """
+    """Every slot, the rest erased so no stale record can outrank this one."""
     spare = (layout.slots - 1) * layout.erase_size
     return slot(payload, layout, sequence) + ERASED * spare
 
@@ -224,8 +188,7 @@ def current(records: list[Record | None]) -> Record | None:
     for record in records:
         if record is None or not record.intact:
             continue
-        # Sequence numbers wrap, so compare the distance, exactly as
-        # `supersedes` does.
+        # Wrapping comparison, as in `supersedes`.
         ahead = (record.sequence - best.sequence) % 2**32 if best else 1
         if ahead and ahead < 0x8000_0000:
             best = record
@@ -351,9 +314,7 @@ def main() -> None:
     payload = payload_from(args)
     blob = image(payload, layout, args.sequence)
 
-    # Read back what was just built, with the same decoder --inspect uses. A
-    # provisioning image that the firmware silently ignores is the one failure
-    # this script exists to prevent.
+    # Decode what was just built, as --inspect would.
     live = current([decode(blob, i, layout) for i in range(layout.slots)])
     if live is None or live.payload != payload:
         sys.exit("built an image this script cannot read back; refusing to write it")

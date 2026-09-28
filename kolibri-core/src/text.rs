@@ -2,12 +2,8 @@
 
 use core::fmt::Write;
 
-/// A fixed-capacity sink for `write!`, so text can be formatted on the stack.
-///
-/// `heapless::String` does the same job if you would rather take the extra
-/// dependency; this exists to keep the tree at four display crates instead of
-/// five. A write that would overflow `N` is rejected whole rather than
-/// panicking or leaving a truncated fragment behind.
+/// A fixed-capacity `write!` sink on the stack. A write that would overflow is
+/// rejected whole.
 pub struct TextBuf<const N: usize> {
     buf: [u8; N],
     len: usize,
@@ -26,8 +22,7 @@ impl<const N: usize> TextBuf<N> {
     /// The text written so far.
     #[must_use]
     pub fn as_str(&self) -> &str {
-        // Only whole `&str` chunks are ever appended, so the prefix is valid
-        // UTF-8 by construction.
+        // Only whole `&str`s are appended, so this is always valid UTF-8.
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
 }

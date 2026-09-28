@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate `kolibri-core/src/logo.rs` from `assets/kolibri.svg`.
 
-The OLED asset and the repository logo are the same artwork: this script
-rasterises the vector master at the two sizes the firmware draws and packs the
-result the way `embedded_graphics::image::ImageRaw` reads it -- one bit per
-pixel, rows padded to whole bytes, most significant bit leftmost. A set bit is
-a lit pixel, so the bird glows on the panel's black background.
-
+Packs 1 bpp, MSB-first rows as `ImageRaw` expects; a set bit is a lit pixel.
 Requires Inkscape and Pillow. Run from the repository root:
 
     python3 tools/gen-logo.py
@@ -25,14 +20,8 @@ SVG = Path("assets/kolibri.svg")
 OUT = Path("kolibri-core/src/logo.rs")
 
 # (rust_const, width, height, ink_threshold, where it is used)
-#
-# `ink_threshold` is the grey level below which a downsampled pixel counts as
-# ink. A higher number means a fatter bird, which is what the 32x24 glyph
-# needs: at that size the beak is one pixel wide and a neutral threshold drops
-# it entirely.
-#
-# Widths are multiples of 8 so that every row packs into whole bytes with no
-# padding, which keeps the generated rows one-to-one with display rows.
+# A higher threshold fattens the bird; the 40x30 one needs it to keep its beak.
+# Widths are multiples of 8 so rows pack into whole bytes.
 SIZES = [
     ("LARGE", 64, 48, 128, "the boot splash"),
     ("SMALL", 40, 30, 165, "the status screen"),

@@ -1,17 +1,8 @@
 #!/usr/bin/env python3
 """Report what the firmware costs in flash and in RAM.
 
-Both numbers matter on a microcontroller and neither is visible in a build log:
-`cargo build` prints nothing about size, and the ELF on disk is mostly debug
-info -- 2.6 MB of it here -- so its file size says nothing about what reaches
-the chip.
-
-The report is derived from two files the build already produced, so it cannot
-drift away from the firmware: section addresses and sizes come out of the ELF,
-and the memory regions they are measured against come out of the `memory.x`
-that esp-hal's build script emitted for this chip and that the linker actually
-used. Flash figures come from espflash, which assembles the image that gets
-written to the part.
+Sections come from the ELF, memory regions from the `memory.x` the linker used,
+and flash image sizes from espflash.
 
     python3 tools/fw-size.py target/riscv32imc-unknown-none-elf/release/kolibri \
         --chip esp32c3
@@ -35,23 +26,17 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# Bumped when the metadata file's shape changes in a way that makes an older
-# file unreadable. A baseline written by a different schema is ignored rather
-# than misread -- comparing the wrong fields is how you get a confident wrong
-# answer.
+# Bumped on incompatible metadata changes; other schemas are ignored as baselines.
 SCHEMA = 1
 
-# ELF constants. Only the 32-bit little-endian flavour is handled: every target
-# this project can plausibly grow to (RISC-V, Xtensa, Cortex-M) is ELF32.
+# Only 32-bit little-endian ELF is handled.
 SHF_ALLOC = 0x2
 SHT_NOBITS = 8
 
-# Sections the linker uses to pad a region out to an alignment boundary. They
-# occupy address space without holding anything.
+# Linker alignment padding sections.
 PADDING_SUFFIX = "_dummy"
 
-# The section esp-hal points the stack at. It is whatever DRAM is left over, so
-# counting it as "used" would report every firmware as filling the chip.
+# Leftover DRAM given to the stack; not counted as used.
 STACK_SECTION = ".stack"
 
 
@@ -70,21 +55,13 @@ class Region:
 
     @property
     def is_flash(self) -> bool:
-        """Memory-mapped flash rather than on-chip SRAM.
-
-        Espressif calls the two flash windows IROM and DROM; a Cortex-M
-        `memory.x` conventionally calls its one window FLASH.
-        """
+        """Memory-mapped flash (Espressif IROM/DROM, Cortex-M FLASH) rather than SRAM."""
         upper = self.name.upper()
         return "ROM" in upper or "FLASH" in upper
 
     @property
     def used(self) -> int:
-        """Bytes the firmware costs: everything but the leftover stack.
-
-        Alignment padding counts. It holds nothing, but it reserves address
-        space that nothing else can be placed in either.
-        """
+        """Bytes the firmware costs: everything but the stack, padding included."""
         return sum(s.size for s in self.sections if s.name != STACK_SECTION)
 
     @property
@@ -105,18 +82,8 @@ class Section:
 
     @property
     def in_flash(self) -> bool:
-        """Whether the section's contents are stored in the flash image.
-
-        NOBITS sections (.bss, .stack) have no contents to store; everything
-        else does, including the RAM-resident code and data that the startup
-        code copies out of flash.
-        """
+        """Whether the section's contents are stored in the flash image."""
         return not self.nobits
-
-
-# ---------------------------------------------------------------------------
-# ELF
-# ---------------------------------------------------------------------------
 
 
 def read_sections(elf: Path) -> list[Section]:
@@ -127,14 +94,12 @@ def read_sections(elf: Path) -> list[Section]:
     if blob[4] != 1 or blob[5] != 1:
         sys.exit(f"{elf}: expected a 32-bit little-endian ELF")
 
-    # e_shoff at 0x20, then e_flags and the two header sizes before the
-    # section header table's own count and string-table index.
+    # e_shoff at 0x20; skip e_flags..e_phnum to e_shentsize, e_shnum, e_shstrndx.
     sh_off, sh_entsize, sh_num, sh_strndx = struct.unpack_from("<I10xHHH", blob, 0x20)
 
     def header(i: int) -> tuple[int, ...]:
         return struct.unpack_from("<10I", blob, sh_off + i * sh_entsize)
 
-    # Section names live in their own string table, itself a section.
     str_off, str_size = header(sh_strndx)[4:6]
     strtab = blob[str_off : str_off + str_size]
 
@@ -165,16 +130,10 @@ REFERENCE = re.compile(r"\b(ORIGIN|LENGTH)\s*\(\s*(\w+)\s*\)", re.IGNORECASE)
 def choose_memory_x(
     elf: Path, sections: list[Section]
 ) -> tuple[Path, dict[str, Region]]:
-    """Find the linker script that describes the chip this ELF was linked for.
+    """Find the linker script this ELF was linked with.
 
-    Several crates in one dependency tree ship a memory.x -- oled_async carries
-    one for an STM32 example board -- and their build scripts drop them side by
-    side under the target directory. Neither name nor timestamp tells them
-    apart: whichever crate happened to build last is newest, which is how CI
-    came to measure an ESP32-C3 firmware against an STM32F103's 20 KB of RAM.
-
-    So the candidates are tried rather than guessed. The regions of the script
-    the linker actually used are the ones the ELF's sections fall inside.
+    Several crates ship a memory.x (oled_async has an STM32 one), so pick the
+    candidate whose regions contain the most section bytes.
     """
     candidates = sorted(elf.parent.glob("build/*/out/memory.x"))
     if not candidates:
@@ -265,22 +224,13 @@ def arithmetic(expr: str, source: Path) -> int:
 
 
 def find_region(section: Section, regions: dict[str, Region]) -> Region | None:
-    """The region a section lives in.
-
-    Smallest containing region wins: on Espressif the cache window sits inside
-    the IRAM window, and the tighter one is the real home.
-    """
+    """The smallest region containing the section (Espressif windows nest)."""
     ordered = sorted(regions.values(), key=lambda r: r.length)
     return next((r for r in ordered if r.origin <= section.addr < r.end), None)
 
 
 def assign(sections: list[Section], regions: dict[str, Region]) -> None:
-    """File each section under its region, and refuse to report on a stray.
-
-    A section outside every region means the regions are not this ELF's, and a
-    report measured against the wrong memory map is worse than no report: it is
-    wrong in a way that looks entirely plausible.
-    """
+    """File each section under its region; a stray means the wrong memory map."""
     strays = []
     for section in sections:
         home = find_region(section, regions)
@@ -293,11 +243,6 @@ def assign(sections: list[Section], regions: dict[str, Region]) -> None:
             "outside every memory region, so these regions are not this ELF's: "
             + ", ".join(s.name for s in strays)
         )
-
-
-# ---------------------------------------------------------------------------
-# Flash image
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -316,11 +261,7 @@ NUMBER = re.compile(r"[\d,]+|\d+\.\d%|0x[0-9a-f]+")
 
 
 def measure_image(elf: Path, chip: str, flashed: Path | None) -> Image | None:
-    """Ask espflash how large the app image is, and how much partition it has.
-
-    The app image is the part that is rebuilt on every flash; the partition it
-    has to fit in is the budget that actually constrains the firmware.
-    """
+    """Ask espflash how large the app image is, and how much partition it has."""
     if shutil.which("espflash") is None:
         print("note: espflash not on PATH, skipping flash figures", file=sys.stderr)
         return None
@@ -348,18 +289,8 @@ def measure_image(elf: Path, chip: str, flashed: Path | None) -> Image | None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Metadata
-# ---------------------------------------------------------------------------
-
-
 def command_output(*argv: str) -> str | None:
-    """The command's first line of output, "" if it printed none, None if it failed.
-
-    The three cases are distinct and all of them come up: rustc prints a
-    version, `git status --porcelain` prints nothing at all when the tree is
-    clean, and neither command exists on a machine that has not got them.
-    """
+    """The command's first line of output, "" if it printed none, None if it failed."""
     if shutil.which(argv[0]) is None:
         return None
     result = subprocess.run(argv, capture_output=True, text=True, check=False)
@@ -377,17 +308,7 @@ def snapshot(
     chip: str | None,
     ci: dict[str, str],
 ) -> dict:
-    """Everything a later run needs to compare itself against this one.
-
-    The measurements are the point, but they are meaningless without what was
-    measured: a report is only comparable against another build of the same
-    board, for the same chip and target, at the same optimisation level. Those
-    four fields are what a comparison checks before it subtracts anything.
-
-    The provenance -- commit, toolchain, CI run -- is what makes a difference
-    explainable once one shows up. A jump in .text between two builds means
-    something quite different if the compiler version moved underneath them.
-    """
+    """Measurements plus what was measured and provenance, for later comparison."""
     placed = [r for r in regions.values() if r.sections]
     # target/<triple>/<profile>/<binary> is how Cargo lays out a cross build.
     profile, triple = elf.parent.name, elf.parent.parent.name
@@ -396,7 +317,6 @@ def snapshot(
     return {
         "schema": SCHEMA,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        # What was measured. A comparison is only valid within one of these.
         "firmware": {
             "label": label,
             "chip": chip,
@@ -406,7 +326,6 @@ def snapshot(
         },
         "source": {
             "commit": commit,
-            # A dirty tree explains a difference that the commit alone cannot.
             "dirty": bool(command_output("git", "status", "--porcelain")),
         },
         "toolchain": {
@@ -442,12 +361,7 @@ def snapshot(
 
 
 def load_baseline(path: Path, current: dict) -> dict | None:
-    """Read a baseline, unless it describes a different firmware.
-
-    Refusing to compare is the useful behaviour here: a delta between two
-    different boards, or between a debug and a release build, is a number that
-    means nothing and reads like it means something.
-    """
+    """Read a baseline, unless it describes a different firmware."""
     try:
         baseline = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
@@ -488,11 +402,6 @@ def change(now: int | None, before: int | None) -> str:
     return f"{difference:+,} ({100 * difference / before:+.1f}%)"
 
 
-# ---------------------------------------------------------------------------
-# Report
-# ---------------------------------------------------------------------------
-
-
 def percent(part: int, whole: int) -> str:
     return f"{100 * part / whole:.1f}%" if whole else "-"
 
@@ -510,8 +419,7 @@ def render(
     ram = [r for r in placed if not r.is_flash]
     resident = sum(s.size for r in placed for s in r.sections if s.in_flash)
 
-    # Every table gains a change column, or none of them do: a report where
-    # some rows carry a delta and others silently do not is a trap.
+    # Every table gets a change column, or none do.
     was_flash = (baseline or {}).get("flash", {})
     was_sram = (baseline or {}).get("sram", {})
 
@@ -602,11 +510,7 @@ def render(
 
 
 def provenance(baseline: dict) -> str:
-    """Say which build the change column is measured against.
-
-    A delta with no stated reference point is not a measurement, and the
-    baseline can be several commits behind whatever this PR is rebased on.
-    """
+    """Say which build the change column is measured against."""
     commit = (baseline.get("source") or {}).get("commit")
     where = [f"`{commit[:9]}`"] if commit else []
     ci = baseline.get("ci") or {}
