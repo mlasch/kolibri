@@ -96,9 +96,8 @@ class MonoFont:
 
 
 
-def load_logo(name: str) -> tuple[list[list[bool]], int, int]:
-    """Decode one `ImageRaw` back out of kolibri-core/src/logo.rs."""
-    source = LOGO_RS.read_text()
+def load_logo(source: str, name: str) -> tuple[list[list[bool]], int, int]:
+    """Decode one `ImageRaw` back out of the logo.rs source."""
 
     width = int(
         re.search(rf"ImageRaw::new\(&{name}_DATA, (\d+)\)", source).group(1)  # type: ignore[union-attr]
@@ -148,7 +147,7 @@ class Canvas:
             self[WIDTH - 1, y] = True
 
 
-def splash(small, large, logo_large) -> Canvas:
+def splash(small, logo_large) -> Canvas:
     canvas = Canvas()
     blit(canvas, logo_large, (4, 8))
     small.draw(canvas, "kolibri", (76, 20))
@@ -194,9 +193,10 @@ def main() -> None:
         [(0x20, 0x7F), (0xA0, 0xFF)],
     )
 
+    logo_rs = LOGO_RS.read_text()
     screens = [
-        render(splash(small, big, load_logo("LARGE"))),
-        render(status(small, big, load_logo("SMALL"))),
+        render(splash(small, load_logo(logo_rs, "LARGE"))),
+        render(status(small, big, load_logo(logo_rs, "SMALL"))),
     ]
 
     width = 2 * MARGIN + sum(s.width for s in screens) + GAP

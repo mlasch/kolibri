@@ -245,7 +245,7 @@ def payload_from(args: argparse.Namespace) -> bytes:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 
-    source = parser.add_mutually_exclusive_group()
+    source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument(
         "--boot-count",
         type=int,
@@ -302,14 +302,6 @@ def main() -> None:
         print(f"{args.inspect}: {len(blob):,} bytes, {layout.capacity}-byte capacity")
         report(blob, layout)
         return
-
-    if (
-        args.boot_count is None
-        and args.text is None
-        and args.hex is None
-        and args.file is None
-    ):
-        parser.error("give a payload: --boot-count, --text, --hex or --file")
 
     payload = payload_from(args)
     blob = image(payload, layout, args.sequence)

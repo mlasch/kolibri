@@ -141,7 +141,8 @@ def choose_memory_x(
 
     def explains(candidate: Path) -> tuple[int, dict[str, Region]]:
         regions = parse_regions(candidate)
-        return sum(s.size for s in sections if find_region(s, regions)), regions
+        ordered = by_size(regions)
+        return sum(s.size for s in sections if find_region(s, ordered)), regions
 
     scored = [(*explains(candidate), candidate) for candidate in candidates]
     placed, regions, memory_x = max(scored, key=lambda entry: entry[0])
@@ -223,17 +224,22 @@ def arithmetic(expr: str, source: Path) -> int:
         sys.exit(f"{source}: cannot parse expression {expr!r}")
 
 
-def find_region(section: Section, regions: dict[str, Region]) -> Region | None:
-    """The smallest region containing the section (Espressif windows nest)."""
-    ordered = sorted(regions.values(), key=lambda r: r.length)
+def by_size(regions: dict[str, Region]) -> list[Region]:
+    """Regions smallest first, so the tightest match wins (Espressif windows nest)."""
+    return sorted(regions.values(), key=lambda r: r.length)
+
+
+def find_region(section: Section, ordered: list[Region]) -> Region | None:
+    """The first region in `ordered` (see `by_size`) containing the section."""
     return next((r for r in ordered if r.origin <= section.addr < r.end), None)
 
 
 def assign(sections: list[Section], regions: dict[str, Region]) -> None:
     """File each section under its region; a stray means the wrong memory map."""
+    ordered = by_size(regions)
     strays = []
     for section in sections:
-        home = find_region(section, regions)
+        home = find_region(section, ordered)
         if home is None:
             strays.append(section)
         else:
