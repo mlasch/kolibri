@@ -1,17 +1,9 @@
-# Virtual workspace root. It deliberately declares no target, no linker flags
-# and no runner: everything MCU-specific lives in the board crate that needs it,
-# under boards/. Build a board by changing into its directory --
-#
-#     cd boards/xiao-esp32c3 && cargo run --release
-#
-# -- because Cargo discovers .cargo/config.toml by walking up from the current
-# directory, and that is what selects the target triple and the flash runner.
+# Virtual workspace root. Everything MCU-specific lives under boards/; build a
+# board from inside its directory so its .cargo/config.toml applies.
 [workspace]
 resolver = "3"
 members = ["kolibri-core", "boards/*"]
-# A bare `cargo build` at the root builds only the portable crate, for the host.
-# That is a feature: if kolibri-core ever picks up an MCU-specific dependency it
-# stops compiling here, which is exactly when you want to know.
+# A bare `cargo build` at the root builds the portable crate for the host.
 default-members = ["kolibri-core"]
 
 [workspace.package]
@@ -21,26 +13,19 @@ rust-version = "1.95"
 license      = "Apache-2.0"
 repository   = "https://github.com/marc/kolibri"
 
-# Only genuinely shared crates belong here. A board's HAL and its runtime
-# support (esp-hal, esp-rtos, embassy-stm32, ...) stay in that board's own
-# manifest, so adding a board touches nothing outside its directory.
+# Shared crates only; a board's HAL stays in that board's manifest.
 [workspace.dependencies]
 kolibri-core = { path = "kolibri-core" }
 
-# Portable Embassy layer: no arch or platform features here. Each board enables
-# whatever its own port needs (esp-rtos supplies it on Espressif; a Cortex-M
-# board turns on embassy-executor's arch-cortex-m instead).
+# No arch/platform features here; each board enables its own.
 embassy-executor = "0.10"
 embassy-time     = "0.5"
 embassy-sync     = "0.8"
 embassy-futures  = "0.1"
 
-# The HAL-independent halves of the driver stack.
 embedded-hal           = "1.0"
 embedded-hal-async     = "1.0"
 embedded-graphics      = "0.8"
-# Blocking NOR-flash traits, so kolibri-core can own the persisted record
-# format without knowing whose flash it is written to.
 embedded-storage       = "0.3"
 oled_async             = "0.2.1"
 display-interface      = "0.5"
@@ -48,18 +33,14 @@ display-interface-i2c  = "0.5.0"
 
 log = "0.4"
 
-# Profiles are only honoured at the workspace root; the same settings in a
-# member manifest are ignored with a warning.
 [profile.dev]
-# A fully unoptimized HAL build is enormous and slow to flash.
 opt-level = "s"
 
 [profile.release]
 opt-level     = "s"
 lto           = "fat"
 codegen-units = 1
-# Debug info lives in the ELF, not in flash, and probe-rs plus esp-backtrace
-# both need it to symbolise addresses.
+# Stays in the ELF, not in flash; needed by probe-rs and esp-backtrace.
 debug         = 2
 
 [workspace.lints.rust]
@@ -70,9 +51,6 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 [workspace.lints.clippy]
 all      = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
-# Firmware and its supporting crate have no downstream API to document error
-# cases for.
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-# Register/pin values are inherently full of small literal casts.
 cast_possible_truncation = "allow"
