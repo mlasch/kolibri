@@ -204,10 +204,16 @@ fn draw_status<D: Panel>(
     //   y 20..40  the reading, at most 8 chars, x 5..85
     //   y 46..56  source label and uptime
     // tools/gen-oled-preview.py mirrors these; rerun it after changing them.
-    Rectangle::new(Point::zero(), Size::new(128, 64))
-        .into_styled(BORDER)
+    //
+    // The bird goes first: its bitmap is opaque, so anything drawn before it
+    // would be blanked by the unlit pixels around it.
+    Image::new(&logo::SMALL_WINGS[pose], bird)
         .draw(display)
-        .and_then(|()| Image::new(&logo::SMALL_WINGS[pose], bird).draw(display))
+        .and_then(|()| {
+            Rectangle::new(Point::zero(), Size::new(128, 64))
+                .into_styled(BORDER)
+                .draw(display)
+        })
         .and_then(|()| text(display, "kolibri", Point::new(5, 4), SMALL))
         .and_then(|()| text(display, value.as_str(), Point::new(5, 20), LARGE))
         .and_then(|()| text(display, status.as_str(), Point::new(5, 46), SMALL))
