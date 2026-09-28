@@ -2,6 +2,8 @@
 """Regenerate `kolibri-core/src/logo.rs` from `assets/kolibri.svg`.
 
 Packs 1 bpp, MSB-first rows as `ImageRaw` expects; a set bit is a lit pixel.
+Besides the master pose (wing up) it renders two more wing poses for the
+flight animation, by swapping the master's wing for the paths in WING_POSES.
 Requires Inkscape and Pillow. Run from the repository root:
 
     python3 tools/gen-logo.py
@@ -29,15 +31,38 @@ SIZES = [
 
 SUPERSAMPLE = 8
 
+# The wing as it appears in the master path, and the smooth back that replaces
+# it when the wing is drawn as a separate shape.
+MASTER_WING = "C 75,32 98,19 118,9\n        C 104,28 86,45 69,56"
+BARE_BACK = "C 62,43 67,49 69,56"
 
-def rasterise(width: int, height: int, threshold: int) -> Image.Image:
-    """Render the SVG and reduce it to 1 bit, anti-aliasing before thresholding."""
-    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
+# (const suffix, wing path) for the animation poses, in viewBox coordinates.
+WING_POSES = [
+    # The master wing rotated 50 degrees down about the shoulder, at 80%.
+    ("MID", "M 63,41 C 78,48 98,55 115,62 C 96,63 76,61 61,56 Z"),
+    # Hand-drawn: a broad blade below the belly, clear of the tail.
+    ("DOWN", "M 52,50 C 46,66 48,82 56,92 C 64,84 72,70 74,56 Z"),
+]
+
+
+def posed(master: str, wing: str) -> str:
+    """The master SVG with its wing replaced by `wing`."""
+    if MASTER_WING not in master:
+        sys.exit(f"{SVG}: wing segment not found; update MASTER_WING")
+    body = master.replace(MASTER_WING, BARE_BACK)
+    return body.replace("<circle", f'<path fill="#12A594" d="{wing}"/>\n  <circle', 1)
+
+
+def rasterise(svg: str, width: int, height: int, threshold: int) -> Image.Image:
+    """Render SVG source to 1 bit, anti-aliasing before thresholding."""
+    with tempfile.TemporaryDirectory() as tmp:
+        src, png = Path(tmp) / "in.svg", Path(tmp) / "out.png"
+        src.write_text(svg)
         subprocess.run(
             [
-                "inkscape", str(SVG),
+                "inkscape", str(src),
                 "--export-type=png",
-                f"--export-filename={tmp.name}",
+                f"--export-filename={png}",
                 "-w", str(width * SUPERSAMPLE),
                 "-h", str(height * SUPERSAMPLE),
                 "-b", "#ffffff",
@@ -45,7 +70,7 @@ def rasterise(width: int, height: int, threshold: int) -> Image.Image:
             check=True,
             capture_output=True,
         )
-        grey = Image.open(tmp.name).convert("L").resize((width, height), Image.LANCZOS)
+        grey = Image.open(png).convert("L").resize((width, height), Image.LANCZOS)
     return grey.point(lambda p: 255 if p < threshold else 0, mode="1")
 
 
@@ -76,27 +101,45 @@ def render_rust() -> str:
         "",
     ]
 
+    master = SVG.read_text()
     for name, width, height, threshold, used_by in SIZES:
-        data = pack(rasterise(width, height, threshold))
-        rows = width // 8
-        out += [
-            f"/// {width}x{height} hummingbird for {used_by}, one row of pixels per line.",
-            "#[rustfmt::skip]",
-            f"const {name}_DATA: [u8; {len(data)}] = [",
+        frames = [(name, master, f"hummingbird for {used_by}")]
+        frames += [
+            (f"{name}_{pose}", posed(master, wing), f"{pose.lower()} wing pose")
+            for pose, wing in WING_POSES
         ]
-        for y in range(height):
-            row = data[y * rows:(y + 1) * rows]
-            out.append("    " + " ".join(f"0x{b:02x}," for b in row))
+        for const, svg, what in frames:
+            out += bitmap(const, rasterise(svg, width, height, threshold), what)
+        wings = ", ".join(const for const, _, _ in frames)
         out += [
-            "];",
-            "",
-            f"/// The {width}x{height} hummingbird, ready to hand to `Image::new`.",
-            f"pub const {name}: ImageRaw<'static, BinaryColor> ="
-            f" ImageRaw::new(&{name}_DATA, {width});",
+            f"/// The {width}x{height} wing poses, up to down, for the flight animation.",
+            f"pub const {name}_WINGS: [ImageRaw<'static, BinaryColor>; {len(frames)}] ="
+            f" [{wings}];",
             "",
         ]
 
     return "\n".join(out)
+
+
+def bitmap(name: str, image: Image.Image, what: str) -> list[str]:
+    width, height = image.size
+    data = pack(image)
+    rows = width // 8
+    out = [
+        f"/// {width}x{height} {what}, one row of pixels per line.",
+        "#[rustfmt::skip]",
+        f"const {name}_DATA: [u8; {len(data)}] = [",
+    ]
+    for y in range(height):
+        out.append("    " + " ".join(f"0x{b:02x}," for b in data[y * rows:(y + 1) * rows]))
+    return out + [
+        "];",
+        "",
+        f"/// The {width}x{height} {what}, ready to hand to `Image::new`.",
+        f"pub const {name}: ImageRaw<'static, BinaryColor> ="
+        f" ImageRaw::new(&{name}_DATA, {width});",
+        "",
+    ]
 
 
 def main() -> int:
