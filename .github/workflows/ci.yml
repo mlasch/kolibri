@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           rustflags: ""
 
@@ -74,7 +74,7 @@ jobs:
       # from a single source of truth shared with local development. Includes
       # its own cargo cache.
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           # This action exports RUSTFLAGS=-D warnings by default, and the
           # RUSTFLAGS environment variable *replaces* the rustflags in the
