@@ -1,21 +1,15 @@
-# Board-local Cargo config. Cargo discovers this by walking up from the current
-# directory, so it applies when you build from inside boards/xiao-esp32c3 and
-# nowhere else -- which is what keeps the target triple, the ESP-specific linker
-# script and the flashing runner out of the other boards' way.
+# Applies only when building from inside boards/xiao-esp32c3.
 [build]
 target = "riscv32imc-unknown-none-elf"
 
 [target.riscv32imc-unknown-none-elf]
-# `cargo run` flashes over the XIAO's USB-C (native USB Serial/JTAG) and then
-# opens a serial monitor.
 runner = "espflash flash --monitor"
 rustflags = [
-  # linkall.x is emitted by esp-hal's build script.
   "-C", "link-arg=-Tlinkall.x",
-  # Required for esp-backtrace to unwind the stack on panic.
+  # Needed for esp-backtrace to unwind on panic.
   "-C", "force-frame-pointers",
 ]
 
 [env]
-# Default log level; override per-invocation, e.g. `ESP_LOG=debug cargo run`.
+# Override per run, e.g. `ESP_LOG=debug cargo run`.
 ESP_LOG = "info"
