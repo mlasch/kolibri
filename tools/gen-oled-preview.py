@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """Render assets/oled-preview.png exactly as the firmware draws the panel.
 
-The point of this script is that the README image cannot quietly drift away
-from the code: the glyphs come out of embedded-graphics' own font sheets, the
-bird comes out of the generated kolibri-core/src/logo.rs, and the coordinates
-below are the same ones kolibri-core/src/display.rs passes to
-`Text::with_baseline` and `Image::new`. The board name on the splash comes from
-`Labels::board` in the board crate -- boards/xiao-esp32c3/src/main.rs.
+Uses embedded-graphics' font sheets, the bitmaps in kolibri-core/src/logo.rs,
+and the coordinates from kolibri-core/src/display.rs. Rerun after layout changes.
 
     python3 tools/gen-oled-preview.py      # needs Pillow and a fetched cargo registry
-
-Rerun it after changing the display task's layout.
 """
 
 from __future__ import annotations
@@ -26,7 +20,6 @@ from PIL import Image
 OUT = Path("assets/oled-preview.png")
 LOGO_RS = Path("kolibri-core/src/logo.rs")
 
-# Panel geometry.
 WIDTH, HEIGHT = 128, 64
 
 # Presentation only -- these values are not in the firmware.
@@ -43,9 +36,6 @@ SAMPLE_READING = "41.7 °C"
 SAMPLE_STATUS = "chip  up 42 s"
 
 
-# ---------------------------------------------------------------------------
-# embedded-graphics font sheets
-# ---------------------------------------------------------------------------
 
 
 def embedded_graphics_root() -> Path:
@@ -104,9 +94,6 @@ class MonoFont:
                         canvas[ox + i * self.width + x, oy + y] = True
 
 
-# ---------------------------------------------------------------------------
-# The generated logo
-# ---------------------------------------------------------------------------
 
 
 def load_logo(name: str) -> tuple[list[list[bool]], int, int]:
@@ -139,9 +126,6 @@ def blit(canvas, logo, origin: tuple[int, int]) -> None:
                 canvas[ox + x, oy + y] = True
 
 
-# ---------------------------------------------------------------------------
-# The two screens, drawn with kolibri-core/src/display.rs's coordinates
-# ---------------------------------------------------------------------------
 
 
 class Canvas:

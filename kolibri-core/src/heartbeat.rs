@@ -8,9 +8,6 @@ use crate::blink;
 pub const PERIOD: Duration = Duration::from_secs(5);
 
 /// Logs that the executor is alive, and alternates the blink rate.
-///
-/// Its only real job is to prove concurrency: it sleeps for seconds at a time
-/// without ever holding up [`blink::run`].
 pub async fn run() {
     let mut ticker = Ticker::every(PERIOD);
     let mut fast = false;
