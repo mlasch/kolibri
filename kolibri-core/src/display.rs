@@ -7,7 +7,7 @@ use display_interface_i2c::I2CInterface;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use embedded_graphics::{
     draw_target::DrawTarget,
-    image::Image,
+    image::{Image, ImageRaw},
     mono_font::{MonoTextStyle, ascii::FONT_6X10, iso_8859_1::FONT_10X20},
     pixelcolor::BinaryColor,
     prelude::*,
@@ -16,7 +16,11 @@ use embedded_graphics::{
 };
 use oled_async::{Builder, display::DisplayVariant, displays::sh1106::Sh1106_128_64, prelude::*};
 
-use crate::{logo, temperature, text::TextBuf};
+use crate::{
+    flight::{Facing, Rng, glide, wingbeat},
+    logo, temperature,
+    text::TextBuf,
+};
 
 /// How often the panel is redrawn.
 pub const PERIOD: Duration = Duration::from_secs(1);
@@ -29,6 +33,15 @@ pub const FLIGHT_STEP: i32 = 4;
 
 /// Time between animation frames; a full-frame flush takes ~26 ms at 400 kHz.
 pub const FLIGHT_FRAME: Duration = Duration::from_millis(40);
+
+/// Shortest rest on the status screen between excursions.
+pub const REST_MIN: Duration = Duration::from_secs(5);
+
+/// Longest rest on the status screen between excursions.
+pub const REST_MAX: Duration = Duration::from_secs(10);
+
+/// How many random waypoints an excursion visits before flying home.
+pub const HOPS: (i32, i32) = (2, 4);
 
 /// Framebuffer size of a 128x64 1-bpp panel (`GraphicsMode`'s default is larger).
 pub const BUFFER_BYTES_128X64: usize = 128 * 64 / 8;
@@ -48,10 +61,6 @@ const PANEL_WIDTH: i32 = 128;
 const SPLASH_BIRD: Point = Point::new(4, 8);
 const SPLASH_BIRD_WIDTH: i32 = 64;
 const STATUS_BIRD: Point = Point::new(86, 3);
-
-/// One wingbeat: (index into `logo::*_WINGS`, body offset in large-bird pixels).
-/// The body rises on the downstroke; the small bird bobs half as far.
-const FLAP: [(usize, i32); 4] = [(0, 0), (1, -1), (2, -2), (1, -1)];
 
 /// A framebuffered monochrome panel that has to be told when to push a frame.
 ///
@@ -126,23 +135,6 @@ fn text<D: Panel>(
         .map(|_| ())
 }
 
-/// Positions from `from` (exclusive) to `to` (inclusive), `step` apart, the last
-/// one clamped to land exactly on `to`.
-fn flight(from: i32, to: i32, step: i32) -> impl Iterator<Item = i32> {
-    let mut x = from;
-    core::iter::from_fn(move || {
-        if x == to {
-            return None;
-        }
-        x = if (to - x).abs() <= step {
-            to
-        } else {
-            x + (to - x).signum() * step
-        };
-        Some(x)
-    })
-}
-
 /// Draws a frame and pushes it to the panel, logging any failure.
 async fn show<D: Panel>(
     display: &mut D,
@@ -160,10 +152,12 @@ async fn show<D: Panel>(
     true
 }
 
-/// The wing pose and bird position for animation frame `n`.
-fn wingbeat(n: usize, at: Point, bob_scale: i32) -> (usize, Point) {
-    let (pose, bob) = FLAP[n % FLAP.len()];
-    (pose, at + Point::new(0, bob / bob_scale))
+/// The small bird's bitmap for a wing pose and heading.
+fn small_bird(pose: usize, facing: Facing) -> &'static ImageRaw<'static, BinaryColor> {
+    match facing {
+        Facing::Left => &logo::SMALL_WINGS[pose],
+        Facing::Right => &logo::SMALL_WINGS_RIGHT[pose],
+    }
 }
 
 fn draw_splash<D: Panel>(
@@ -181,8 +175,8 @@ fn draw_splash<D: Panel>(
 fn draw_status<D: Panel>(
     display: &mut D,
     labels: Labels,
-    pose: usize,
-    bird: Point,
+    bird: &ImageRaw<'static, BinaryColor>,
+    at: Point,
 ) -> Result<(), D::Error> {
     let mut value = TextBuf::<16>::new();
     let _ = match temperature::LATEST.try_get() {
@@ -207,7 +201,7 @@ fn draw_status<D: Panel>(
     //
     // The bird goes first: its bitmap is opaque, so anything drawn before it
     // would be blanked by the unlit pixels around it.
-    Image::new(&logo::SMALL_WINGS[pose], bird)
+    Image::new(bird, at)
         .draw(display)
         .and_then(|()| {
             Rectangle::new(Point::zero(), Size::new(128, 64))
@@ -229,28 +223,97 @@ async fn intro<D: Panel>(display: &mut D, labels: Labels) {
 
     let mut ticker = Ticker::every(FLIGHT_FRAME);
     let mut frame = 0;
-    for x in flight(SPLASH_BIRD.x, -SPLASH_BIRD_WIDTH, FLIGHT_STEP) {
-        let (pose, bird) = wingbeat(frame, Point::new(x, SPLASH_BIRD.y), 1);
+    let gone = Point::new(-SPLASH_BIRD_WIDTH, SPLASH_BIRD.y);
+    for p in glide(SPLASH_BIRD, gone, FLIGHT_STEP) {
+        let (pose, bird) = wingbeat(frame, p, 1);
         if !show(display, |d| draw_splash(d, labels.board, pose, bird)).await {
             return;
         }
         frame += 1;
         ticker.next().await;
     }
-    for x in flight(PANEL_WIDTH, STATUS_BIRD.x, FLIGHT_STEP) {
-        let (pose, bird) = wingbeat(frame, Point::new(x, STATUS_BIRD.y), 2);
-        if !show(display, |d| draw_status(d, labels, pose, bird)).await {
-            return;
-        }
-        frame += 1;
-        ticker.next().await;
+    let offstage = Point::new(PANEL_WIDTH, STATUS_BIRD.y);
+    if fly(
+        display,
+        labels,
+        &mut ticker,
+        &mut frame,
+        offstage,
+        STATUS_BIRD,
+    )
+    .await
+    {
+        rest(display, labels).await;
     }
-    // Settle into the resting pose rather than holding a mid-flap frame.
-    show(display, |d| draw_status(d, labels, 0, STATUS_BIRD)).await;
 }
 
-/// Renders the latest [`temperature::LATEST`] reading once per [`PERIOD`].
-pub async fn run<D: Panel>(mut display: D, labels: Labels) {
+/// Flies the small bird over the status screen from `from` to `to`, facing the
+/// way it goes. Returns `false` if a frame could not be shown.
+async fn fly<D: Panel>(
+    display: &mut D,
+    labels: Labels,
+    ticker: &mut Ticker,
+    frame: &mut usize,
+    from: Point,
+    to: Point,
+) -> bool {
+    let facing = Facing::toward(from, to).unwrap_or(Facing::Left);
+    for p in glide(from, to, FLIGHT_STEP) {
+        let (pose, at) = wingbeat(*frame, p, 2);
+        if !show(display, |d| {
+            draw_status(d, labels, small_bird(pose, facing), at)
+        })
+        .await
+        {
+            return false;
+        }
+        *frame += 1;
+        ticker.next().await;
+    }
+    true
+}
+
+/// Draws the status screen with the bird perched at home, wings up, facing left.
+async fn rest<D: Panel>(display: &mut D, labels: Labels) {
+    show(display, |d| {
+        draw_status(d, labels, small_bird(0, Facing::Left), STATUS_BIRD)
+    })
+    .await;
+}
+
+/// Flies the bird through a few random waypoints, some possibly off-screen,
+/// and back home.
+async fn wander<D: Panel>(display: &mut D, labels: Labels, rng: &mut Rng) {
+    let hops = rng.between(HOPS.0, HOPS.1);
+    log::info!("bird takes off for {hops} hops");
+
+    let mut ticker = Ticker::every(FLIGHT_FRAME);
+    let mut frame = 0;
+    let mut at = STATUS_BIRD;
+    for hop in 0..=hops {
+        let to = if hop == hops {
+            STATUS_BIRD
+        } else {
+            rng.waypoint()
+        };
+        if !fly(display, labels, &mut ticker, &mut frame, at, to).await {
+            return;
+        }
+        at = to;
+    }
+    rest(display, labels).await;
+}
+
+/// A random rest between [`REST_MIN`] and [`REST_MAX`].
+fn rest_period(rng: &mut Rng) -> Duration {
+    let spread = (REST_MAX - REST_MIN).as_millis();
+    let extra = rng.below(u32::try_from(spread).unwrap_or(u32::MAX).saturating_add(1));
+    REST_MIN + Duration::from_millis(u64::from(extra))
+}
+
+/// Renders the latest [`temperature::LATEST`] reading once per [`PERIOD`], and
+/// every so often sends the bird on an excursion. `seed` drives its choices.
+pub async fn run<D: Panel>(mut display: D, labels: Labels, seed: u32) {
     if let Err(e) = display.init().await {
         log::error!("display init failed: {e:?} (wrong address? check SDA/SCL)");
         return;
@@ -259,47 +322,30 @@ pub async fn run<D: Panel>(mut display: D, labels: Labels) {
 
     intro(&mut display, labels).await;
 
+    let mut rng = Rng::new(seed);
     let mut ticker = Ticker::every(PERIOD);
     loop {
-        ticker.next().await;
-        show(&mut display, |d| draw_status(d, labels, 0, STATUS_BIRD)).await;
+        let takeoff = Instant::now() + rest_period(&mut rng);
+        while Instant::now() < takeoff {
+            ticker.next().await;
+            rest(&mut display, labels).await;
+        }
+        wander(&mut display, labels, &mut rng).await;
+        // Skip the ticks missed while flying rather than redrawing in a burst.
+        ticker.reset();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::vec::Vec;
 
     #[test]
-    fn flight_lands_exactly_on_target() {
-        let path: Vec<i32> = flight(128, 86, 6).collect();
-        assert_eq!(path, [122, 116, 110, 104, 98, 92, 86]);
-    }
-
-    #[test]
-    fn flight_clamps_the_last_step() {
-        let path: Vec<i32> = flight(4, -64, 6).collect();
-        assert_eq!(path.last(), Some(&-64));
-        let mut prev = 4;
-        for x in path {
-            assert!(x < prev && prev - x <= 6);
-            prev = x;
+    fn rest_periods_stay_in_range() {
+        let mut rng = Rng::new(7);
+        for _ in 0..1000 {
+            let rest = rest_period(&mut rng);
+            assert!((REST_MIN..=REST_MAX).contains(&rest), "{rest:?}");
         }
-    }
-
-    #[test]
-    fn a_wingbeat_starts_at_rest_and_cycles() {
-        let at = Point::new(10, 20);
-        assert_eq!(wingbeat(0, at, 1), (0, at));
-        assert_eq!(wingbeat(2, at, 1), (2, Point::new(10, 18)));
-        assert_eq!(wingbeat(2, at, 2), (2, Point::new(10, 19)));
-        assert_eq!(wingbeat(FLAP.len(), at, 1), wingbeat(0, at, 1));
-        assert!(FLAP.iter().all(|&(pose, _)| pose < logo::LARGE_WINGS.len()));
-    }
-
-    #[test]
-    fn flight_to_where_it_already_is_is_empty() {
-        assert_eq!(flight(86, 86, 6).count(), 0);
     }
 }

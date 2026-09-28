@@ -22,6 +22,7 @@ extern crate std;
 
 pub mod blink;
 pub mod display;
+pub mod flight;
 pub mod heartbeat;
 pub mod logo;
 pub mod storage;

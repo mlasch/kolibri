@@ -44,7 +44,9 @@ Avoid GPIO2, 8 and 9 for outputs; driving them at reset can select the wrong boo
 **OLED:** an SH1106 128x64 I²C module on `D4`/`D5`, `3V3`, `GND`, address
 `0x3C`. Use the module's own pull-ups; the C3's internal ones are too weak for
 400 kHz. After a two-second splash the hummingbird flies out to the left
-and back in from the right onto the status screen:
+and back in from the right onto the status screen. Every few seconds
+(`display::REST_MIN`..`REST_MAX`) it takes off on a random loop around the
+screen, sometimes off it, and returns to its perch:
 
 ![Two 128x64 OLED screens: the boot splash with the hummingbird logo, and the status screen showing 41.7 °C](assets/oled-preview.png)
 

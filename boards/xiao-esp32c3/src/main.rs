@@ -143,8 +143,8 @@ async fn temperature(sensor: Sensor) {
 
 /// Draws the splash and then the status screen.
 #[embassy_executor::task]
-async fn display(panel: Display) {
-    kolibri_core::display::run(panel, LABELS).await;
+async fn display(panel: Display, seed: u32) {
+    kolibri_core::display::run(panel, LABELS, seed).await;
 }
 
 /// Brings the chip up, starts the scheduler, and spawns the application tasks.
@@ -188,5 +188,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(blink(led).expect("blink task pool exhausted"));
     spawner.spawn(heartbeat().expect("heartbeat task pool exhausted"));
     spawner.spawn(temperature(sensor).expect("temperature task pool exhausted"));
-    spawner.spawn(display(oled).expect("display task pool exhausted"));
+    // Seeds the bird's flight choices so each boot flies differently.
+    let seed = esp_hal::rng::Rng::new().random();
+    spawner.spawn(display(oled, seed).expect("display task pool exhausted"));
 }
