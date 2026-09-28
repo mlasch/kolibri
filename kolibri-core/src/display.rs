@@ -33,6 +33,11 @@ pub const DEFAULT_ADDRESS: u8 = 0x3C;
 /// SH1106 control byte marking the following bytes as pixel data.
 pub const DATA_BYTE: u8 = 0x40;
 
+const SMALL: MonoTextStyle<'static, BinaryColor> = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+// ISO 8859-1 so the degree sign is a real glyph.
+const LARGE: MonoTextStyle<'static, BinaryColor> = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
+const BORDER: PrimitiveStyle<BinaryColor> = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+
 /// A framebuffered monochrome panel that has to be told when to push a frame.
 ///
 /// Any `oled_async` display implements it through the blanket impl below.
@@ -95,24 +100,25 @@ pub struct Labels {
     pub source: &'static str,
 }
 
+fn text<D: Panel>(
+    display: &mut D,
+    s: &str,
+    at: Point,
+    style: MonoTextStyle<'static, BinaryColor>,
+) -> Result<(), D::Error> {
+    Text::with_baseline(s, at, style, Baseline::Top)
+        .draw(display)
+        .map(|_| ())
+}
+
 /// Draws the boot splash and leaves it up for [`SPLASH_PERIOD`].
 async fn splash<D: Panel>(display: &mut D, board: &str) {
-    let text = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-
     display.clear_buffer();
 
     let drawn = Image::new(&logo::LARGE, Point::new(4, 8))
         .draw(display)
-        .and_then(|()| {
-            Text::with_baseline("kolibri", Point::new(76, 20), text, Baseline::Top)
-                .draw(display)
-                .map(|_| ())
-        })
-        .and_then(|()| {
-            Text::with_baseline(board, Point::new(76, 34), text, Baseline::Top)
-                .draw(display)
-                .map(|_| ())
-        });
+        .and_then(|()| text(display, "kolibri", Point::new(76, 20), SMALL))
+        .and_then(|()| text(display, board, Point::new(76, 34), SMALL));
 
     if let Err(e) = drawn {
         log::warn!("splash draw failed: {e:?}");
@@ -128,11 +134,6 @@ async fn splash<D: Panel>(display: &mut D, board: &str) {
 
 /// Renders the latest [`temperature::LATEST`] reading once per [`PERIOD`].
 pub async fn run<D: Panel>(mut display: D, labels: Labels) {
-    let text = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-    // ISO 8859-1 so the degree sign is a real glyph.
-    let reading = MonoTextStyle::new(&FONT_10X20, BinaryColor::On);
-    let border = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
-
     if let Err(e) = display.init().await {
         log::error!("display init failed: {e:?} (wrong address? check SDA/SCL)");
         return;
@@ -169,24 +170,12 @@ pub async fn run<D: Panel>(mut display: D, labels: Labels) {
         //   y 46..56  source label and uptime
         // tools/gen-oled-preview.py mirrors these; rerun it after changing them.
         let drawn = Rectangle::new(Point::zero(), Size::new(128, 64))
-            .into_styled(border)
+            .into_styled(BORDER)
             .draw(&mut display)
             .and_then(|()| Image::new(&logo::SMALL, Point::new(86, 3)).draw(&mut display))
-            .and_then(|()| {
-                Text::with_baseline("kolibri", Point::new(5, 4), text, Baseline::Top)
-                    .draw(&mut display)
-                    .map(|_| ())
-            })
-            .and_then(|()| {
-                Text::with_baseline(value.as_str(), Point::new(5, 20), reading, Baseline::Top)
-                    .draw(&mut display)
-                    .map(|_| ())
-            })
-            .and_then(|()| {
-                Text::with_baseline(status.as_str(), Point::new(5, 46), text, Baseline::Top)
-                    .draw(&mut display)
-                    .map(|_| ())
-            });
+            .and_then(|()| text(&mut display, "kolibri", Point::new(5, 4), SMALL))
+            .and_then(|()| text(&mut display, value.as_str(), Point::new(5, 20), LARGE))
+            .and_then(|()| text(&mut display, status.as_str(), Point::new(5, 46), SMALL));
 
         if let Err(e) = drawn {
             log::warn!("display draw failed: {e:?}");
