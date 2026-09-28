@@ -76,14 +76,11 @@ impl<F: NorFlash, const N: usize> Store<F, N> {
     /// Reads the current record into `into` and returns its length, or
     /// `Ok(None)` if there is no valid record.
     pub fn load(&mut self, into: &mut [u8; N]) -> Result<Option<usize>, Error<F::Error>> {
-        // Newest first: a corrupt slot read after the good one would clobber `into`.
-        let mut order = [0, 1];
         let headers = [self.header(0)?, self.header(1)?];
-        if supersedes(headers[1], headers[0]) {
-            order.swap(0, 1);
-        }
+        let newest = newest(&headers);
 
-        for slot in order {
+        // Newest first: a corrupt slot read after the good one would clobber `into`.
+        for slot in [newest, 1 - newest] {
             let Some(header) = headers[slot] else {
                 continue;
             };
@@ -105,15 +102,11 @@ impl<F: NorFlash, const N: usize> Store<F, N> {
         }
 
         let headers = [self.header(0)?, self.header(1)?];
-        // With nothing stored yet, start at slot 0; otherwise use the other slot.
-        let current = match (headers[0], headers[1]) {
-            (None, None) => None,
-            (a, b) => Some(usize::from(supersedes(b, a))),
+        let newest = newest(&headers);
+        let (slot, seq) = match headers[newest] {
+            Some(current) => (1 - newest, current.seq.wrapping_add(1)),
+            None => (0, 0),
         };
-        let slot = current.map_or(0, |slot| 1 - slot);
-        let seq = current
-            .and_then(|slot| headers[slot])
-            .map_or(0, |header| header.seq.wrapping_add(1));
 
         let mut block = [0u8; N];
         block[..payload.len()].copy_from_slice(payload);
@@ -170,6 +163,11 @@ impl<F: NorFlash, const N: usize> Store<F, N> {
             crc: u32::from_le_bytes([raw[12], raw[13], raw[14], raw[15]]),
         }))
     }
+}
+
+/// Index of the newer slot; slot 0 when neither or only slot 0 is present.
+fn newest(headers: &[Option<Header>; SLOTS]) -> usize {
+    usize::from(supersedes(headers[1], headers[0]))
 }
 
 /// Whether `a` is newer than `b`. A missing slot loses to a present one.
