@@ -85,56 +85,42 @@ fn count_boot(flash: FLASH<'static>) -> Option<u32> {
     let mut flash = FlashStorage::new(flash);
 
     let mut raw = [0u8; PARTITION_TABLE_MAX_LEN];
-    let table = match partitions::read_partition_table(&mut flash, &mut raw) {
-        Ok(table) => table,
-        Err(error) => {
-            log::warn!("no partition table: {error:?}");
-            return None;
-        }
-    };
-    let entry = match table.find_partition(PartitionType::Data(DataPartitionSubType::Nvs)) {
-        Ok(Some(entry)) => entry,
-        Ok(None) => {
+    let table = partitions::read_partition_table(&mut flash, &mut raw)
+        .inspect_err(|error| log::warn!("no partition table: {error:?}"))
+        .ok()?;
+    let entry = table
+        .find_partition(PartitionType::Data(DataPartitionSubType::Nvs))
+        .inspect_err(|error| log::warn!("partition table unreadable: {error:?}"))
+        .ok()?
+        .or_else(|| {
             log::warn!("no nvs partition to store settings in");
-            return None;
-        }
-        Err(error) => {
-            log::warn!("partition table unreadable: {error:?}");
-            return None;
-        }
-    };
+            None
+        })?;
 
     let mut region = entry.as_flash_region(&mut flash);
     let nor = region.as_nor_flash().ok()?;
-    let mut store = match Store::<_, SETTINGS_CAPACITY>::new(nor) {
-        Ok(store) => store,
-        Err(error) => {
-            log::warn!("nvs partition cannot hold the settings record: {error:?}");
-            return None;
-        }
-    };
+    let mut store = Store::<_, SETTINGS_CAPACITY>::new(nor)
+        .inspect_err(|error| log::warn!("nvs partition cannot hold the settings record: {error:?}"))
+        .ok()?;
 
     let mut settings = [0u8; SETTINGS_CAPACITY];
-    let previous = match store.load(&mut settings) {
-        Ok(Some(len)) if len >= 4 => {
+    let previous = match store
+        .load(&mut settings)
+        .inspect_err(|error| log::warn!("settings unreadable: {error:?}"))
+        .ok()?
+    {
+        Some(len) if len >= 4 => {
             u32::from_le_bytes([settings[0], settings[1], settings[2], settings[3]])
         }
-        // Nothing stored yet, or a record from before this counter existed.
-        Ok(_) => 0,
-        Err(error) => {
-            log::warn!("settings unreadable: {error:?}");
-            return None;
-        }
+        _ => 0,
     };
 
     let boots = previous.wrapping_add(1);
-    match store.save(&boots.to_le_bytes()) {
-        Ok(()) => Some(boots),
-        Err(error) => {
-            log::warn!("settings not written: {error:?}");
-            None
-        }
-    }
+    store
+        .save(&boots.to_le_bytes())
+        .inspect_err(|error| log::warn!("settings not written: {error:?}"))
+        .ok()?;
+    Some(boots)
 }
 
 /// Blinks the LED on `D10`.
