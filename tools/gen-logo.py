@@ -21,12 +21,12 @@ from PIL import Image
 SVG = Path("assets/kolibri.svg")
 OUT = Path("kolibri-core/src/logo.rs")
 
-# (rust_const, width, height, ink_threshold, where it is used)
+# (rust_const, width, height, ink_threshold, where it is used, also facing right)
 # A higher threshold fattens the bird; the 40x30 one needs it to keep its beak.
 # Widths are multiples of 8 so rows pack into whole bytes.
 SIZES = [
-    ("LARGE", 64, 48, 128, "the boot splash"),
-    ("SMALL", 40, 30, 165, "the status screen"),
+    ("LARGE", 64, 48, 128, "the boot splash", False),
+    ("SMALL", 40, 30, 165, "the status screen", True),
 ]
 
 SUPERSAMPLE = 8
@@ -102,23 +102,34 @@ def render_rust() -> str:
     ]
 
     master = SVG.read_text()
-    for name, width, height, threshold, used_by in SIZES:
+    for name, width, height, threshold, used_by, mirror in SIZES:
         frames = [(name, master, f"hummingbird for {used_by}")]
         frames += [
             (f"{name}_{pose}", posed(master, wing), f"{pose.lower()} wing pose")
             for pose, wing in WING_POSES
         ]
-        for const, svg, what in frames:
-            out += bitmap(const, rasterise(svg, width, height, threshold), what)
-        wings = ", ".join(const for const, _, _ in frames)
-        out += [
-            f"/// The {width}x{height} wing poses, up to down, for the flight animation.",
-            f"pub const {name}_WINGS: [ImageRaw<'static, BinaryColor>; {len(frames)}] ="
-            f" [{wings}];",
-            "",
-        ]
+        images = [rasterise(svg, width, height, threshold) for _, svg, _ in frames]
+        for (const, _, what), image in zip(frames, images):
+            out += bitmap(const, image, what)
+        out += wing_set(f"{name}_WINGS", [c for c, _, _ in frames], width, height, "")
+
+        if mirror:
+            for (const, _, what), image in zip(frames, images):
+                flipped = image.transpose(Image.FLIP_LEFT_RIGHT)
+                out += bitmap(f"{const}_RIGHT", flipped, f"{what}, facing right")
+            consts = [f"{c}_RIGHT" for c, _, _ in frames]
+            out += wing_set(f"{name}_WINGS_RIGHT", consts, width, height, ", facing right")
 
     return "\n".join(out)
+
+
+def wing_set(name: str, consts: list[str], width: int, height: int, facing: str) -> list[str]:
+    return [
+        f"/// The {width}x{height} wing poses{facing}, up to down, for the flight animation.",
+        f"pub const {name}: [ImageRaw<'static, BinaryColor>; {len(consts)}] ="
+        f" [{', '.join(consts)}];",
+        "",
+    ]
 
 
 def bitmap(name: str, image: Image.Image, what: str) -> list[str]:
